@@ -157,7 +157,7 @@ plugins:
 | `HERMES_ANTIGRAVITY_DEBUG=1` | Enable debug file logging |
 | `HERMES_ANTIGRAVITY_DEBUG=2` | Verbose debug logging |
 
-> OAuth credentials are loaded from `antigravity_auth/_credentials.py` (local, gitignored) or environment variables. For local development from the repo, copy the defaults from `_credentials.py.example` or set the env vars.
+> OAuth credentials are loaded from `antigravity_auth/_credentials.py` (local, gitignored) or environment variables. When installed via pip, the credentials are bundled with the package. For local development from the repo, set the `ANTIGRAVITY_CLIENT_ID` and `ANTIGRAVITY_CLIENT_SECRET` env vars.
 
 ---
 
