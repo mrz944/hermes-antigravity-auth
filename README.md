@@ -171,14 +171,16 @@ hermes -z "Hello" --provider antigravity --model claude-opus-4-6-thinking
 
 ### How It Works
 
-The plugin intercepts all HTTP requests going to Google's Cloud Code endpoint and transforms them:
+On plugin load, the interceptor monkey-patches Hermes' internal HTTP client to inject Antigravity-specific headers into every Cloud Code API request via httpx event hooks:
 
-1. **Request transformation**: Code Assist envelope → Antigravity envelope with randomized headers, device fingerprints, and style-appropriate user agents
-2. **Schema sanitization**: Tool schemas are cleaned of unsupported JSON Schema keywords (`const`, `$ref`, `$defs`, etc.)
-3. **Thinking block stripping**: Claude's extended thinking blocks are stripped from outgoing requests (fresh thinking is generated each turn)
-4. **Response unwrapping**: Antigravity's response envelope is unwrapped back to standard Gemini format
-5. **Multi-account rotation**: Accounts rotate automatically on rate limits with health-score-based selection
-6. **Token refresh**: Access tokens are automatically refreshed on 401 responses
+1. **Header injection**: Randomized Antigravity `User-Agent`, `X-Goog-Api-Client`, and `Client-Metadata` headers replace the default Code Assist headers — this is the key that unlocks Claude and other non-Gemini models
+2. **Device fingerprint**: Per-request device identity metadata is injected into `Client-Metadata`
+3. **Multi-account rotation**: Accounts rotate automatically on 429 rate limits with health-score-based selection, and shadow-banned accounts (403) are placed on 24-hour cooldown
+4. **Token refresh**: Access tokens are refreshed on 401 responses; a background watchdog thread proactively refreshes tokens before expiry
+5. **Endpoint routing**: Requests go to `cloudcode-pa.googleapis.com` (PROD) — the daily sandbox rejects free-tier accounts for Claude
+6. **Quota monitoring**: `hermes antigravity check` fetches live quota data from Google's API showing remaining percentage per model
+
+The request body stays in Code Assist format — the Antigravity API accepts it natively. Only the headers distinguish Antigravity from Code Assist routing.
 
 ### Available Models
 
