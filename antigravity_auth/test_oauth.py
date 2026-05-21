@@ -65,10 +65,11 @@ class TestOAuth(unittest.TestCase):
         self.assertIn('Missing PKCE verifier in state', str(cm.exception))
 
     def test_authorize_antigravity(self):
-        # We need to set the credentials for the test
-        # We'll mock the constants to avoid needing _credentials.py
-        with patch('antigravity_auth.oauth.ANTIGRAVITY_CLIENT_ID', 'test_client_id'), \
-             patch('antigravity_auth.oauth.ANTIGRAVITY_CLIENT_SECRET', 'test_client_secret'), \
+        # Patch the credential loading at the constants level since
+        # authorize_antigravity() now uses require_credentials()
+        with patch('antigravity_auth.constants._credentials_valid', True), \
+             patch('antigravity_auth.constants.ANTIGRAVITY_CLIENT_ID', 'test_client_id'), \
+             patch('antigravity_auth.constants.ANTIGRAVITY_CLIENT_SECRET', 'test_client_secret'), \
              patch('antigravity_auth.oauth.ANTIGRAVITY_REDIRECT_URI', 'http://localhost:51121/oauth-callback'), \
              patch('antigravity_auth.oauth.ANTIGRAVITY_SCOPES', ['scope1', 'scope2']):
             result = authorize_antigravity(project_id='test_project')
