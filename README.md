@@ -59,6 +59,12 @@ Install the CLI and model-provider wrappers into your Hermes plugins directory:
 hermes-antigravity-install
 ```
 
+If the script is not on your shell `PATH`, run the module directly with the Python environment where the package is installed:
+
+```bash
+python -m antigravity_auth.install_plugins
+```
+
 From a source checkout, copying the plugin directories also works:
 
 ```bash
@@ -112,6 +118,11 @@ hermes -z "Hello" --provider ag --model claude-opus-4-6-thinking
 2. Install the Hermes plugin wrappers:
    ```bash
    hermes-antigravity-install
+   ```
+
+   If that script is not on `PATH`, use:
+   ```bash
+   python -m antigravity_auth.install_plugins
    ```
 
    Or copy the source plugin directories to the Hermes plugins directory:

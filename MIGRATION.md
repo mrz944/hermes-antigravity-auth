@@ -27,7 +27,19 @@ This guide helps users of `opencode-antigravity-auth` (the OpenCode npm plugin) 
 pip install hermes-antigravity-auth
 ```
 
-### 2. Migrate accounts
+### 2. Install the Hermes plugin wrappers
+
+```bash
+hermes-antigravity-install
+```
+
+If the script is not on your shell `PATH`, run:
+
+```bash
+python -m antigravity_auth.install_plugins
+```
+
+### 3. Migrate accounts
 
 The `antigravity-accounts.json` file format is compatible between OpenCode and Hermes. Simply copy it:
 
@@ -35,12 +47,14 @@ The `antigravity-accounts.json` file format is compatible between OpenCode and H
 cp ~/.config/opencode/antigravity-accounts.json ~/.hermes/antigravity-accounts.json
 ```
 
-### 3. Set up Hermes config
+### 4. Set up Hermes config
 
 Copy your plugin settings from `~/.config/opencode/antigravity.json` to your Hermes `config.yaml` at `~/.hermes/config.yaml`:
 
 ```yaml
 plugins:
+  enabled:
+    - antigravity-cli
   entries:
     antigravity:
       # Model behavior
@@ -68,7 +82,7 @@ plugins:
       debug_tui: false
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```bash
 hermes antigravity login    # Authenticate with Google
