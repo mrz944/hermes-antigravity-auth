@@ -9,10 +9,13 @@ import httpx
 class TestRequestHook(unittest.TestCase):
     """Test the Antigravity request hook transforms Code Assist -> Antigravity."""
 
+    _original_content_property = None
+
     @classmethod
     def setUpClass(cls):
         """Patch httpx.Request.content to be writable (read-only in httpx >=0.28)."""
-        content_property = httpx.Request.__dict__["content"]
+        cls._original_content_property = httpx.Request.__dict__["content"]
+        content_property = cls._original_content_property
         if content_property.fset is None:
             httpx.Request.content = property(
                 content_property.fget,
@@ -20,6 +23,13 @@ class TestRequestHook(unittest.TestCase):
                 content_property.fdel,
                 content_property.__doc__,
             )
+
+    @classmethod
+    def tearDownClass(cls):
+        """Restore original httpx.Request.content property."""
+        if cls._original_content_property is not None:
+            httpx.Request.content = cls._original_content_property
+            cls._original_content_property = None
 
     def setUp(self):
         from antigravity_auth.interceptor import _antigravity_request_hook
