@@ -13,3 +13,11 @@ def register(ctx):
     setup_fn=setup_cli,
     handler_fn=handle_cli,
   )
+
+  # Activate the HTTP interceptor so all google-gemini-cli requests
+  # route through Antigravity's transform pipeline.
+  try:
+    from .interceptor import install as install_interceptor
+    install_interceptor()
+  except Exception:
+    pass  # non-fatal — plugin still works for CLI commands
