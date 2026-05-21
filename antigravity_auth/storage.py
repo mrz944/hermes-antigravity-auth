@@ -164,6 +164,8 @@ def sync_token_to_auth_json(
             "email": email,
             "last_refresh": current_epoch_ms
         }
+        # Also register under google-gemini-cli so the /model picker detects it
+        data["providers"]["google-gemini-cli"] = data["providers"]["antigravity"]
         
         if set_active:
             data["active_provider"] = "antigravity"
