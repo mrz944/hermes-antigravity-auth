@@ -127,6 +127,9 @@ try:
       inference_base_url="cloudcode-pa://google",
     )
     PROVIDER_REGISTRY["google-gemini-cli"] = target
+  else:
+    # Patch the existing entry's display name for the /model picker
+    target.name = "Google Antigravity"
   for _alias in antigravity.aliases:
     PROVIDER_REGISTRY[_alias] = target
 except Exception:
