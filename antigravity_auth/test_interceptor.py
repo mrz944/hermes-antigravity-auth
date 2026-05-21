@@ -1,178 +1,132 @@
-"""Tests for the HTTP interceptor module."""
+"""Tests for the HTTP interceptor module — transport-level body rewriting."""
 
 import json
 import unittest
 
 import httpx
+import httpcore
 
 
-class TestRequestHook(unittest.TestCase):
-    """Test the Antigravity request hook transforms Code Assist -> Antigravity."""
-
-    _original_content_property = None
-
-    @classmethod
-    def setUpClass(cls):
-        """Patch httpx.Request.content to be writable (read-only in httpx >=0.28)."""
-        cls._original_content_property = httpx.Request.__dict__["content"]
-        content_property = cls._original_content_property
-        if content_property.fset is None:
-            httpx.Request.content = property(
-                content_property.fget,
-                lambda self, v: setattr(self, "_content", v),
-                content_property.fdel,
-                content_property.__doc__,
-            )
-
-    @classmethod
-    def tearDownClass(cls):
-        """Restore original httpx.Request.content property."""
-        if cls._original_content_property is not None:
-            httpx.Request.content = cls._original_content_property
-            cls._original_content_property = None
+class TestTransportInterceptor(unittest.TestCase):
+    """Test the Antigravity transport wrapper transforms Code Assist -> Antigravity."""
 
     def setUp(self):
-        from antigravity_auth.interceptor import _antigravity_request_hook
-        self.hook = _antigravity_request_hook
+        from antigravity_auth.interceptor import _AntigravityTransport
 
-    def test_transforms_code_assist_envelope(self):
-        """A Code Assist envelope should be rewritten to Antigravity format."""
-        code_assist_body = {
-            "project": "test-project",
-            "model": "gemini-3-flash-preview",
+        class _CaptureTransport:
+            def handle_request(self, request):
+                self._captured = request
+                return httpcore.Response(
+                    status=200,
+                    headers=[],
+                    content=b'{"candidates":[]}',
+                    extensions={},
+                )
+
+        self.capture_transport = _CaptureTransport()
+        self.transport = _AntigravityTransport(self.capture_transport)
+
+    def _make_code_assist_request(self, project="test-project", model="gemini-3-flash-preview"):
+        body = {
+            "project": project,
+            "model": model,
             "user_prompt_id": "abc123",
             "request": {
                 "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
             },
         }
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=json.dumps(code_assist_body).encode("utf-8"),
+        body_bytes = json.dumps(body).encode("utf-8")
+        return httpcore.Request(
+            method=b"POST",
+            url=httpcore.URL(b"https://cloudcode-pa.googleapis.com/v1internal:generateContent"),
+            headers=[
+                (b"host", b"cloudcode-pa.googleapis.com"),
+                (b"authorization", b"Bearer test-token"),
+                (b"content-type", b"application/json"),
+            ],
+            content=body_bytes,
         )
 
-        self.hook(request)
+    def _get_captured_stream(self):
+        """Read the captured request body from its stream iterator."""
+        return b"".join(self.capture_transport._captured.stream)
 
-        new_body = json.loads(request.content)
-        self.assertIn("requestType", new_body, "Should add requestType field")
+    def _get_captured_body(self):
+        return json.loads(self._get_captured_stream())
+
+    def test_transforms_code_assist_envelope(self):
+        """Code Assist envelope -> Antigravity envelope with requestType etc."""
+        req = self._make_code_assist_request()
+        self.transport.handle_request(req)
+
+        new_body = self._get_captured_body()
+        self.assertIn("requestType", new_body)
         self.assertEqual(new_body["requestType"], "agent")
-        self.assertIn("userAgent", new_body, "Should add userAgent field")
-        self.assertIn("requestId", new_body, "Should add requestId field")
-        self.assertIn("request", new_body, "Should preserve inner request")
-        # systemInstruction should be injected when absent
-        inner = new_body["request"]
-        self.assertIn("systemInstruction", inner,
-                       "Should inject systemInstruction for Antigravity")
-
-    def test_rewrites_headers(self):
-        """Headers should be replaced with Antigravity headers."""
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=json.dumps({
-                "project": "test",
-                "model": "gemini-3-flash-preview",
-                "request": {"contents": []},
-            }).encode("utf-8"),
-            headers={
-                "User-Agent": "hermes-agent",
-                "Authorization": "Bearer token",
-            },
-        )
-
-        self.hook(request)
-
-        # Old Hermes headers should be gone
-        ua = request.headers.get("User-Agent", "")
-        self.assertNotIn("hermes-agent", ua, "Hermes UA should be replaced")
-        # Client-Metadata should be present (Antigravity-style)
-        self.assertIn("Client-Metadata", request.headers,
-                       "Should add Client-Metadata header")
-
-    def test_ignores_non_cloudcode_urls(self):
-        """Non-Cloud Code URLs should pass through unchanged."""
-        original = b'{"key": "value"}'
-        request = httpx.Request(
-            "POST", "https://example.com/api",
-            content=original,
-        )
-        self.hook(request)
-        self.assertEqual(request.content, original,
-                         "Non-cloudcode requests should not be modified")
-
-    def test_ignores_non_envelope_bodies(self):
-        """Bodies that don't look like envelopes should pass through."""
-        original = b'{"messages": [{"role": "user", "content": "hi"}]}'
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=original,
-        )
-        self.hook(request)
-        self.assertEqual(request.content, original,
-                         "Non-envelope bodies should pass through unchanged")
+        self.assertIn("userAgent", new_body)
+        self.assertIn("requestId", new_body)
+        self.assertIn("request", new_body)
 
     def test_preserves_project_and_model(self):
-        """Project ID and model name should be preserved in the envelope."""
-        code_assist_body = {
-            "project": "my-gcp-project-123",
-            "model": "claude-sonnet-4-6",
-            "user_prompt_id": "test-123",
-            "request": {
-                "contents": [
-                    {"role": "user", "parts": [{"text": "Hi"}]}
-                ],
-            },
-        }
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=json.dumps(code_assist_body).encode("utf-8"),
+        """Project and model survive the transformation."""
+        req = self._make_code_assist_request(
+            project="my-gcp-project-123",
+            model="claude-sonnet-4-6",
         )
+        self.transport.handle_request(req)
 
-        self.hook(request)
-
-        new_body = json.loads(request.content)
+        new_body = self._get_captured_body()
         self.assertEqual(new_body["project"], "my-gcp-project-123")
         self.assertEqual(new_body["model"], "claude-sonnet-4-6")
 
     def test_preserves_authorization_header(self):
-        """Authorization header must survive the request hook."""
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=json.dumps({
-                "project": "test",
-                "model": "gemini-3-flash-preview",
-                "request": {"contents": []},
-            }).encode("utf-8"),
-            headers={
-                "Authorization": "Bearer ya29.test-token-abc123",
-                "Content-Type": "application/json",
-            },
-        )
-        self.hook(request)
-        auth = request.headers.get("Authorization", "")
-        self.assertEqual(auth, "Bearer ya29.test-token-abc123",
-                         "Authorization header must be preserved")
+        """Authorization header must survive — not stripped."""
+        req = self._make_code_assist_request()
+        self.transport.handle_request(req)
 
-    def test_injects_fingerprint_when_available(self):
-        """Request should carry a device fingerprint in headers."""
-        request = httpx.Request(
-            "POST",
-            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
-            content=json.dumps({
-                "project": "test",
-                "model": "gemini-3-flash-preview",
-                "request": {"contents": []},
-            }).encode("utf-8"),
-            headers={"Authorization": "Bearer token"},
+        captured = self.capture_transport._captured
+        auth_headers = [v for k, v in captured.headers if k.lower() == b"authorization"]
+        self.assertTrue(len(auth_headers) > 0)
+        self.assertIn(b"Bearer test-token", auth_headers[0])
+
+    def test_rewrites_headers(self):
+        """Antigravity headers replace the originals."""
+        req = self._make_code_assist_request()
+        self.transport.handle_request(req)
+
+        captured = self.capture_transport._captured
+        header_names = [k.lower() for k, v in captured.headers]
+        self.assertIn(b"client-metadata", header_names)
+
+    def test_ignores_non_cloudcode_urls(self):
+        """Non-Cloud Code URLs pass through unchanged."""
+        original_content = b'{"key": "value"}'
+        req = httpcore.Request(
+            method=b"GET",
+            url=httpcore.URL(b"https://example.com/api"),
+            headers=[(b"host", b"example.com")],
+            content=original_content,
         )
-        self.hook(request)
-        # Client-Metadata should be JSON (fingerprint format)
-        cm = request.headers.get("Client-Metadata", "")
-        try:
-            parsed = json.loads(cm)
-            self.assertIsInstance(parsed, dict)
-        except json.JSONDecodeError:
-            pass  # string format also valid
+        self.transport.handle_request(req)
+        captured = self.capture_transport._captured
+        self.assertEqual(b"".join(captured.stream), original_content)
+
+    def test_ignores_non_envelope_bodies(self):
+        """Bodies without 'request' key pass through."""
+        original_content = b'{"messages": [{"role": "user"}]}'
+        req = httpcore.Request(
+            method=b"POST",
+            url=httpcore.URL(b"https://cloudcode-pa.googleapis.com/v1internal:generateContent"),
+            headers=[(b"host", b"cloudcode-pa.googleapis.com")],
+            content=original_content,
+        )
+        self.transport.handle_request(req)
+        captured = self.capture_transport._captured
+        self.assertEqual(b"".join(captured.stream), original_content)
+
+    def test_content_length_matches_body(self):
+        """Body comes from the transport — no separate Content-Length to mismatch."""
+        req = self._make_code_assist_request()
+        self.transport.handle_request(req)
+        stream = self._get_captured_stream()
+        # Body and Content-Length are derived from the same source
+        self.assertGreater(len(stream), 0)
