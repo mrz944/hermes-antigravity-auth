@@ -19,6 +19,26 @@ else:
         ANTIGRAVITY_CLIENT_ID = ""
         ANTIGRAVITY_CLIENT_SECRET = ""
 
+_MISSING_CREDENTIALS_ERROR = (
+    "Antigravity OAuth credentials not found.\n\n"
+    "Options:\n"
+    "  1. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars\n"
+    "  2. Create antigravity_auth/_credentials.py (see README for format)\n"
+    "  3. Reinstall the package: pip install --force-reinstall git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+)
+
+if not ANTIGRAVITY_CLIENT_ID or not ANTIGRAVITY_CLIENT_SECRET:
+    _credentials_valid = False
+else:
+    _credentials_valid = True
+
+
+def require_credentials() -> tuple[str, str]:
+    """Return (client_id, client_secret) or raise RuntimeError with instructions."""
+    if not _credentials_valid:
+        raise RuntimeError(_MISSING_CREDENTIALS_ERROR)
+    return ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+
 ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback"
 
 ANTIGRAVITY_SCOPES = [

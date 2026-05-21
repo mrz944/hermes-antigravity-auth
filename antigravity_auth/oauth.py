@@ -71,11 +71,12 @@ def _ensure_credentials():
         )
 
 def authorize_antigravity(project_id: str = "") -> dict:
-    _ensure_credentials()
+    from .constants import require_credentials
+    cid, csec = require_credentials()
     pkce = generate_pkce()
     
     params = {
-        "client_id": ANTIGRAVITY_CLIENT_ID,
+        "client_id": cid,
         "response_type": "code",
         "redirect_uri": ANTIGRAVITY_REDIRECT_URI,
         "scope": " ".join(ANTIGRAVITY_SCOPES),
