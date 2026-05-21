@@ -103,6 +103,10 @@ Or use the alias:
 hermes -z "Hello" --provider ag --model claude-opus-4-6-thinking
 ```
 
+In `hermes model` and the in-agent `/model` picker, Antigravity appears as
+**Google Antigravity**. Internally this still uses Hermes' supported
+`google-gemini-cli` Cloud Code runtime.
+
 </details>
 
 <details>
