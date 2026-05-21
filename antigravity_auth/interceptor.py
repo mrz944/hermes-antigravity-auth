@@ -306,13 +306,10 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
 # =============================================================================
 
 def _wrap_http_client(http_client: httpx.Client) -> httpx.Client:
-    """Replace the transport with our Antigravity wrapper and add response hook."""
+    """Replace the transport with our Antigravity wrapper."""
     original_transport = http_client._transport
     http_client._transport = _AntigravityTransport(original_transport)
-    # Add response-only event hook (no body mutation)
-    if http_client.event_hooks.get("response") is None:
-        http_client.event_hooks["response"] = []
-    http_client.event_hooks["response"].append(_antigravity_response_hook)
+    # Response hook disabled for debugging
     return http_client
 
 
