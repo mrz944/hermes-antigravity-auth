@@ -74,9 +74,11 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
         request.url = httpx.URL(new_url)
 
     # Replace the body (httpx 0.28 Request.content is read-only — use _content)
-    request._content = json.dumps(envelope).encode("utf-8")
+    new_body = json.dumps(envelope).encode("utf-8")
+    request._content = new_body
+    request.stream = httpx.ByteStream(new_body)
     # Content-Length is now stale — set explicitly since httpx 0.28 doesn't recompute
-    request.headers["Content-Length"] = str(len(request._content))
+    request.headers["Content-Length"] = str(len(new_body))
 
     # --- Strip Claude thinking blocks when keep_thinking=False ---
     from .transform.thinking import strip_all_thinking_blocks
@@ -87,7 +89,10 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
         if isinstance(inner, dict) and "contents" in inner:
             strip_all_thinking_blocks(inner["contents"])
             # Re-serialize after stripping
-            request._content = json.dumps(envelope).encode("utf-8")
+            new_body = json.dumps(envelope).encode("utf-8")
+            request._content = new_body
+            request.stream = httpx.ByteStream(new_body)
+            request.headers["Content-Length"] = str(len(new_body))
 
     # --- Sanitize tool schemas when claude_tool_hardening enabled ---
     from .transform.schema import clean_json_schema
@@ -107,7 +112,10 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
                     # OpenAI format: tools have parameters directly
                     elif "parameters" in tool:
                         tool["parameters"] = clean_json_schema(tool["parameters"])
-            request._content = json.dumps(envelope).encode("utf-8")
+            new_body = json.dumps(envelope).encode("utf-8")
+            request._content = new_body
+            request.stream = httpx.ByteStream(new_body)
+            request.headers["Content-Length"] = str(len(new_body))
 
     # Replace headers with randomized Antigravity headers
     new_headers = build_antigravity_headers(header_style=header_style)
