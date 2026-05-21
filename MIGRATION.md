@@ -201,4 +201,4 @@ plugins:
 
 ## Support
 
-If you encounter issues during migration, please open a GitHub issue at [https://github.com/NoeFabris/hermes-antigravity-auth/issues](https://github.com/NoeFabris/hermes-antigravity-auth/issues).
+If you encounter issues during migration, please open a GitHub issue at [https://github.com/Reedtrullz/hermes-antigravity-auth/issues](https://github.com/Reedtrullz/hermes-antigravity-auth/issues).
