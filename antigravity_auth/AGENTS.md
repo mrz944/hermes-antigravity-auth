@@ -6,22 +6,25 @@ Hermes Agent plugin for Google Antigravity OAuth (Python). OAuth, request transf
 
 ```
 antigravity_auth/
-├── config.py             # Config dataclass, YAML loader, env var overrides
+├── config.py             # Config dataclass, YAML loader, env var overrides, TTL cache
 ├── oauth.py              # PKCE authorization + token exchange
 ├── token.py              # Access token refresh, expiry detection, OAuth errors
+├── token_watchdog.py     # Background daemon thread for proactive token refresh
 ├── storage.py            # ~/.hermes/antigravity-accounts.json + auth.json
-├── cli.py                # OAuth callback server, login flow, account management
+├── cli.py                # OAuth callback server, login flow, account management, quota check
+├── interceptor.py        # HTTP interceptor: monkey-patches GeminiCloudCodeClient
+├── tools.py              # Hermes tool registration (google_antigravity_search)
 ├── search.py             # Google Search tool via Antigravity API
 ├── recovery.py           # Session recovery: tool_result_missing, thinking block errors
 ├── debug.py              # Structured logging with 25-file rotation
 ├── verification.py       # Account health probe, validation_required detection
-├── endpoints.py          # Endpoint fallback chain (daily → autopush → prod)
+├── endpoints.py          # EndpointProvider with fallback chain (daily → autopush → prod)
 ├── fingerprint.py        # Per-account device identity generation
 ├── constants.py          # Platform detection, default Antigravity headers
 ├── accounts/             # Multi-account management
 │   ├── manager.py        # AccountManager: selection, rotation, disk persistence
 │   ├── state.py          # ManagedAccount, RateLimitState dataclasses
-│   ├── quota.py          # Dual quota pool (Antigravity + Gemini CLI) tracking
+│   ├── quota.py          # Dual quota pool (Antigravity + Gemini CLI) tracking + fetch_quota_from_api
 │   ├── ratelimit.py      # Rate limit dedup window, exponential backoff, cooldowns
 │   ├── rotation.py       # HealthScoreTracker for account scoring
 │   └── quota_display.py  # Color-coded quota progress bars for CLI

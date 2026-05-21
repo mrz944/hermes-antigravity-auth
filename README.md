@@ -408,23 +408,26 @@ cp ~/.config/opencode/antigravity-accounts.json ~/.hermes/antigravity-accounts.j
 ```
 hermes-antigravity-auth/
 ├── antigravity_auth/        # Python package (Hermes plugin)
-│   ├── config.py            # YAML config with env overrides
+│   ├── config.py            # YAML config with env overrides + TTL cache
 │   ├── oauth.py             # PKCE OAuth flow
 │   ├── token.py             # Token refresh & validation
+│   ├── token_watchdog.py    # Background proactive token refresh
 │   ├── storage.py           # Persistent account storage
-│   ├── cli.py               # CLI login, account management
+│   ├── cli.py               # CLI login, account management, quota check
+│   ├── interceptor.py       # HTTP interceptor: monkey-patches GeminiCloudCodeClient
+│   ├── tools.py             # Hermes tool registration
 │   ├── search.py            # Google Search via Antigravity API
 │   ├── recovery.py          # Session recovery
 │   ├── accounts/            # Multi-account management
 │   │   ├── manager.py       # Account rotation & selection
-│   │   ├── quota.py         # Dual quota pool tracking
+│   │   ├── quota.py         # Dual quota pool tracking + live quota API
 │   │   ├── ratelimit.py     # Rate limit handling & backoff
 │   │   └── rotation.py      # Health-score rotation
 │   └── transform/           # Request/response transformation
 │       ├── messages.py      # OpenAI → Gemini content format
 │       ├── thinking.py      # Claude thinking block stripping
 │       ├── schema.py        # JSON schema sanitization
-│       ├── envelope.py      # Antigravity request wrapping
+│       ├── envelope.py      # Antigravity request wrapping + headers
 │       └── response.py      # SSE streaming response parsing
 ├── docs/                    # Documentation
 │   ├── ARCHITECTURE.md      # Architecture guide
@@ -432,7 +435,7 @@ hermes-antigravity-auth/
 ├── plugins/
 │   ├── model-providers/     # Hermes model provider plugin
 │   └── antigravity_tools/   # Hermes CLI plugin
-├── pyproject.toml           # Python package config
+├── pyproject.toml           # Python package config (v1.6.0)
 ├── MIGRATION.md             # OpenCode → Hermes migration guide
 └── README.md                # This file
 ```

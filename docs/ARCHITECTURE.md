@@ -2,7 +2,7 @@
 
 **Last Updated:** May 2026
 
-This document describes the Hermes Agent Python implementation for Google Antigravity OAuth, account management, request transformation, and CLI integration.
+This document describes the Hermes Agent Python implementation for Google Antigravity OAuth, account management, request transformation, HTTP interception, and CLI integration.
 
 ---
 
@@ -12,11 +12,13 @@ This document describes the Hermes Agent Python implementation for Google Antigr
 Hermes Agent
   ├─ antigravity-cli plugin: hermes antigravity ...
   ├─ antigravity provider alias: antigravity / ag
+  ├─ HTTP interceptor: monkey-patches GeminiCloudCodeClient
+  │   └─ Transforms Code Assist → Antigravity envelope + headers
   ├─ Hermes Cloud Code runtime: google-gemini-cli
-  └─ Antigravity auth package: OAuth, storage, accounts, transforms
+  └─ Antigravity auth package: OAuth, storage, accounts, transforms, watchdog
 ```
 
-The plugin authenticates Google accounts, stores Antigravity account state under `HERMES_HOME`, and registers Antigravity provider aliases that route through Hermes' native `google-gemini-cli` Cloud Code transport (`cloudcode-pa://google`). Login also syncs credentials into Hermes' `auth/google_oauth.json` store so the native runtime can refresh and attach OAuth tokens.
+The plugin authenticates Google accounts, stores Antigravity account state under `HERMES_HOME`, and registers Antigravity provider aliases that route through Hermes' native `google-gemini-cli` Cloud Code transport. On plugin load, an HTTP interceptor monkey-patches `GeminiCloudCodeClient.__init__` to install httpx event hooks that transform every request (Code Assist envelope → Antigravity envelope with randomized headers, schema sanitization, thinking-block stripping) and handle responses (token refresh on 401, account rotation on 429, endpoint fallback on 5xx). A background watchdog thread proactively refreshes tokens before expiry.
 
 ---
 
@@ -25,19 +27,23 @@ The plugin authenticates Google accounts, stores Antigravity account state under
 ```
 antigravity_auth/
 ├── cli.py                    # hermes antigravity login/accounts/list/delete/check/quota
-├── hermes_plugin.py          # Hermes entry point for the CLI plugin
-├── config.py                 # ~/.hermes/config.yaml loader with env overrides
+├── hermes_plugin.py          # Hermes entry point: registers CLI, interceptor, recovery, tools, watchdog
+├── hermes_provider_plugin.py # Branded provider aliases for Hermes model discovery
+├── interceptor.py            # HTTP interceptor: monkey-patches GeminiCloudCodeClient, httpx event hooks
+├── config.py                 # ~/.hermes/config.yaml loader with env overrides + TTL cache
 ├── oauth.py                  # PKCE authorize/exchange flow
 ├── storage.py                # HERMES_HOME-aware auth/account storage
-├── token.py                  # refresh token parsing and refresh
-├── endpoints.py              # Antigravity endpoint fallback metadata
-├── accounts/manager.py       # account selection, cooldowns, persistence
+├── token.py                  # Refresh token parsing and refresh
+├── token_watchdog.py         # Background daemon thread for proactive token refresh
+├── tools.py                  # Hermes tool registration (google_antigravity_search)
+├── endpoints.py              # EndpointProvider with fallback chain (daily → autopush → prod)
+├── accounts/manager.py       # Account selection, cooldowns, persistence, rate-limit rotation
 └── transform/                # OpenAI/Gemini envelope, schema, SSE helpers
 
 plugins/
-├── antigravity_tools/        # file-system Hermes CLI plugin wrapper
+├── antigravity_tools/        # File-system Hermes CLI plugin wrapper
 └── model-providers/
-    └── antigravity/          # provider aliases for Hermes model discovery
+    └── antigravity/          # Provider aliases for Hermes model discovery
 ```
 
 The Python package is the source of truth. The plugin directories are thin Hermes integration wrappers.
@@ -66,7 +72,7 @@ The model provider plugin at `plugins/model-providers/antigravity` registers a `
 - `antigravity-google`
 - `ag`
 
-This is intentional. Hermes v0.14 has native runtime support for `google-gemini-cli` and `cloudcode-pa://google`; generic `oauth_external` providers are not enough to execute requests. Antigravity aliases therefore resolve to the supported Hermes Cloud Code provider while exposing Antigravity model names and account tooling.
+This delegates to Hermes' native `google-gemini-cli` Cloud Code transport. The HTTP interceptor (`interceptor.py`) then monkey-patches `GeminiCloudCodeClient.__init__` to install httpx event hooks that transform every request before it reaches the network.
 
 Typical usage:
 
@@ -124,6 +130,28 @@ Sensitive files:
 
 ---
 
+## HTTP Interception
+
+The interceptor (`antigravity_auth/interceptor.py`) is the glue layer connecting the transform modules to the runtime. On plugin load, `hermes_plugin.py` calls `install()` which:
+
+1. Saves a reference to the original `GeminiCloudCodeClient.__init__`
+2. Replaces it with a patched version that wraps `self._http` with httpx event hooks
+3. The **request hook** transforms every outgoing request:
+   - Parses the Code Assist envelope (`{project, model, user_prompt_id, request}`)
+   - Rewrites to the Antigravity envelope (`{project, model, userAgent, requestId, requestType, request}`)
+   - Replaces headers with randomized Antigravity-style headers + device fingerprint
+   - Strips Claude thinking blocks (when `keep_thinking: false`)
+   - Sanitizes tool schemas (when `claude_tool_hardening: true`)
+   - Rewrites the URL through the endpoint fallback chain
+4. The **response hook** handles responses:
+   - Refreshes OAuth tokens on 401 (when `proactive_token_refresh: true`)
+   - Rotates accounts on 429 rate limits (when `switch_on_first_rate_limit: true`)
+   - Marks endpoints as failed on 5xx errors for fallback chain
+   - Rewrites preview access errors to actionable messages
+   - Detects recoverable session errors
+
+---
+
 ## Request And Transform Helpers
 
 The transform package contains the Python equivalents for request/response adaptation:
@@ -131,12 +159,12 @@ The transform package contains the Python equivalents for request/response adapt
 | Module | Purpose |
 |--------|---------|
 | `transform/messages.py` | OpenAI-style messages to Gemini `contents[].parts[]` |
-| `transform/thinking.py` | Claude thinking block stripping |
-| `transform/schema.py` | JSON Schema allowlist sanitization |
-| `transform/envelope.py` | Antigravity request envelope construction |
-| `transform/response.py` | SSE and candidate response conversion |
+| `transform/thinking.py` | Claude thinking block stripping + signature handling |
+| `transform/schema.py` | JSON Schema allowlist sanitization (const, $ref, $defs removal) |
+| `transform/envelope.py` | Antigravity request envelope construction + header randomization |
+| `transform/response.py` | SSE streaming response parsing + preview access error rewriting |
 
-These helpers are covered by unit tests and remain available for Hermes integration paths that need direct Antigravity request wrapping.
+These modules are called by the HTTP interceptor at runtime. All are covered by unit tests.
 
 ---
 
@@ -152,6 +180,24 @@ Key behavior:
 - Health-score based selection and recovery
 - Optional PID offset for parallel Hermes sessions
 - Cached quota state with soft quota thresholds
+
+---
+
+## Token Watchdog
+
+`antigravity_auth/token_watchdog.py` runs a background daemon thread that polls token expiry every `proactive_refresh_check_interval_seconds` (default 300s). When a token is within `proactive_refresh_buffer_seconds` (default 1800s) of expiry, the watchdog refreshes it proactively and syncs the new credentials to Hermes' OAuth store. This prevents 401 errors on in-flight requests.
+
+---
+
+## Quota API Integration
+
+`antigravity_auth/accounts/quota.py` provides `fetch_quota_from_api()` which calls `v1internal:retrieveUserQuota` with the Antigravity envelope. The `hermes antigravity check` and `hermes antigravity quota` CLI commands use this to display live quota usage (used/limit per quota group) instead of the previous stub that always printed "OK (Active)".
+
+---
+
+## Google Search Tool
+
+`antigravity_auth/tools.py` registers `google_antigravity_search` with Hermes' tool registry. The tool refreshes the active account's access token, then calls `antigravity_auth/search.py` which wraps the query in the Antigravity envelope and returns grounded search results with citations.
 
 ---
 
