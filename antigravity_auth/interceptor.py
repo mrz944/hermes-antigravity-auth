@@ -91,6 +91,26 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
             # Re-serialize after stripping
             request.content = json.dumps(envelope).encode("utf-8")
 
+    # --- Sanitize tool schemas when claude_tool_hardening enabled ---
+    from .transform.schema import clean_json_schema
+
+    if config.claude_tool_hardening:
+        inner = envelope.get("request") if isinstance(envelope, dict) else {}
+        tools = inner.get("tools") if isinstance(inner, dict) else None
+        if isinstance(tools, list):
+            for tool in tools:
+                if isinstance(tool, dict):
+                    # Gemini format: tools have functionDeclarations
+                    func_decls = tool.get("functionDeclarations")
+                    if isinstance(func_decls, list):
+                        for fd in func_decls:
+                            if isinstance(fd, dict) and "parameters" in fd:
+                                fd["parameters"] = clean_json_schema(fd["parameters"])
+                    # OpenAI format: tools have parameters directly
+                    elif "parameters" in tool:
+                        tool["parameters"] = clean_json_schema(tool["parameters"])
+            request.content = json.dumps(envelope).encode("utf-8")
+
     # Replace headers with randomized Antigravity headers
     new_headers = build_antigravity_headers(header_style=header_style)
     for key in list(request.headers.keys()):
