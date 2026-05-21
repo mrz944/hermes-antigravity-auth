@@ -1,5 +1,6 @@
-"""HTTP interceptor — patches GeminiCloudCodeClient to transform request headers
-via httpx event hooks. Body stays in Code Assist format (API may accept it)."""
+"""HTTP interceptor — patches GeminiCloudCodeClient to inject Antigravity
+headers via httpx event hooks. Body stays in Code Assist format — the
+Antigravity API accepts it with the correct headers and User-Agent."""
 
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
 
 
 def _antigravity_response_hook(response: httpx.Response) -> None:
-    """Handle side effects (401 refresh, 429 rotation)."""
+    """Handle side effects: 401 token refresh, 429 account rotation, 5xx endpoint marking."""
     from .config import get_config
     config = get_config()
 
@@ -88,6 +89,35 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     )
         except Exception as e:
             logger.warning("Token refresh failed: %s", e)
+
+    if response.status_code == 429 and config.switch_on_first_rate_limit:
+        try:
+            from .accounts.manager import AccountManager
+            from .accounts.ratelimit import mark_rate_limited
+            mgr = AccountManager.load_from_disk()
+            active = mgr.get_current_account_for_family("gemini")
+            if active:
+                retry = config.default_retry_after_seconds
+                rh = response.headers.get("Retry-After") or response.headers.get("retry-after")
+                if rh:
+                    try: retry = int(rh)
+                    except ValueError: pass
+                mark_rate_limited(active, float(retry * 1000), "gemini", "antigravity")
+                logger.warning("Rate limited on %s", active.email)
+                next_acc = mgr.get_current_or_next_for_family("gemini", strategy="hybrid")
+                if next_acc and next_acc.index != active.index:
+                    from .token import refresh_access_token
+                    from .cli import sync_token_to_google_oauth
+                    r = refresh_access_token({"refresh": next_acc.refresh_parts.refresh_token})
+                    if r.get("access"):
+                        sync_token_to_google_oauth(
+                            access_token=r["access"], refresh_token=next_acc.refresh_parts.refresh_token,
+                            project_id=next_acc.refresh_parts.project_id or "", email=next_acc.email,
+                            expires_ms=r.get("expires"),
+                        )
+                        logger.info("Rotated to %s after rate limit", next_acc.email)
+        except Exception as e:
+            logger.warning("Rate limit handler error: %s", e)
 
     if response.status_code >= 500:
         try:
