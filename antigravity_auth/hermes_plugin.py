@@ -53,3 +53,10 @@ def register(ctx):
     register_tools()
   except Exception:
     pass
+
+  # Start background token refresh watchdog
+  try:
+    from .token_watchdog import start_watchdog
+    start_watchdog()
+  except Exception:
+    pass
