@@ -47,7 +47,7 @@ class _AntigravityTransport:
         try:
             new_req = httpcore.Request(
                 method=request.method,
-                url=request.url,
+                url=str(request.url),
                 headers=request.headers,
                 content=body_bytes,
                 extensions=request.extensions,
@@ -64,7 +64,7 @@ class _AntigravityTransport:
             url_str = str(request.url) if hasattr(request, 'url') else ""
             
             # Only intercept Cloud Code requests
-            if b"cloudcode-pa.googleapis.com" not in (request.url.host or b""):
+            if "cloudcode-pa.googleapis.com" not in (request.url.host or ""):
                 return self._original.handle_request(request)
 
             # Read the body from the stream iterator (consumes it)
@@ -154,7 +154,7 @@ class _AntigravityTransport:
 
         new_request = httpcore.Request(
             method=request.method,
-            url=new_url,
+            url=str(new_url),
             headers=raw_headers,
             content=new_body,
             extensions=request.extensions,
