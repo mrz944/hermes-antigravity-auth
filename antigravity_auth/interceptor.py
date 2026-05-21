@@ -16,8 +16,65 @@ _ORIGINAL_INIT = None
 
 
 def _antigravity_request_hook(request: httpx.Request) -> None:
-    """Transform Code Assist envelope → Antigravity envelope + randomized headers."""
-    logger.debug("Antigravity request hook fired: %s %s", request.method, request.url)
+    """Transform Code Assist envelope → Antigravity envelope + randomized headers.
+
+    The native GeminiCloudCodeClient wraps requests as:
+        {"project": "...", "model": "...", "user_prompt_id": "...", "request": {...}}
+
+    We rewrite this to the Antigravity envelope:
+        {"project": "...", "model": "...", "userAgent": "antigravity",
+         "requestId": "agent-<uuid>", "requestType": "agent", "request": {...}}
+
+    Headers are also replaced with randomized Antigravity-style headers.
+    """
+    from .transform.envelope import (
+        build_antigravity_headers,
+        build_antigravity_envelope,
+        resolve_model_for_header_style,
+    )
+    from .config import get_config
+
+    # Only transform requests going to the Cloud Code endpoint
+    if "cloudcode-pa.googleapis.com" not in str(request.url):
+        return
+
+    try:
+        body = json.loads(request.content)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    # Only transform requests that look like Code Assist envelopes
+    if not isinstance(body, dict) or "request" not in body:
+        return
+
+    config = get_config()
+    model = str(body.get("model", ""))
+    project_id = str(body.get("project", ""))
+    inner = body["request"]
+
+    header_style = "gemini-cli" if config.cli_first else "antigravity"
+    model = resolve_model_for_header_style(model, header_style)
+
+    # Build the Antigravity envelope
+    envelope = build_antigravity_envelope(
+        request_payload=inner,
+        model=model,
+        project_id=project_id,
+        header_style=header_style,
+    )
+
+    # Replace the body
+    request.content = json.dumps(envelope).encode("utf-8")
+
+    # Replace headers with randomized Antigravity headers
+    new_headers = build_antigravity_headers(header_style=header_style)
+    for key in list(request.headers.keys()):
+        if key.lower() not in ("host", "content-type", "content-length", "accept-encoding"):
+            del request.headers[key]
+    for key, val in new_headers.items():
+        request.headers[key] = val
+
+    logger.debug("Transformed request to Antigravity envelope for model=%s", model)
 
 
 def _antigravity_response_hook(response: httpx.Response) -> None:
