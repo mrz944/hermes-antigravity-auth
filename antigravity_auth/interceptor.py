@@ -1,12 +1,5 @@
-"""HTTP transport interceptor — monkey-patches GeminiCloudCodeClient to
-install Antigravity request/response transformation.
-
-Architecture:
-- Transport wrapper: intercepts at httpcore.Request level to rewrite body
-  before httpx/h11 processes it (avoids Content-Length mismatch)
-- httpx event hooks: handle header modifications and response processing
-  (no body mutation in event hooks — that's the transport's job)
-"""
+"""HTTP interceptor — patches GeminiCloudCodeClient to transform requests
+via a custom httpx.Client subclass that overrides send()."""
 
 from __future__ import annotations
 
@@ -15,7 +8,6 @@ import logging
 from typing import Any
 
 import httpx
-import httpcore
 
 from .config import get_config
 from .endpoints import select_endpoint
@@ -32,54 +24,27 @@ _ORIGINAL_INIT = None
 
 
 # =============================================================================
-# Transport-level interception (body mutation — safe from Content-Length bugs)
+# Custom httpx Client — intercepts send() to transform requests
 # =============================================================================
 
-class _AntigravityTransport:
-    """Wraps the original httpcore transport, rewriting request bodies."""
+class _AntigravityClient(httpx.Client):
+    """httpx.Client subclass that transforms Cloud Code requests to Antigravity format."""
 
-    def __init__(self, original_transport):
-        self._original = original_transport
+    def send(self, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+        url_str = str(request.url)
+        if "cloudcode-pa.googleapis.com" not in url_str:
+            return super().send(request, *args, **kwargs)
 
-    def _forward(self, request, body_bytes):
-        """Forward a request with the already-read body bytes (stream was consumed)."""
-        import sys, traceback
+        # Read the body
+        body_bytes = request.read()
         try:
-            new_req = httpcore.Request(
-                method=request.method,
-                url=str(request.url),
-                headers=request.headers,
-                content=body_bytes,
-                extensions=request.extensions,
-            )
-            return self._original.handle_request(new_req)
-        except Exception:
-            traceback.print_exc(file=sys.stderr)
-            raise
+            body = json.loads(body_bytes)
+        except (json.JSONDecodeError, TypeError):
+            return super().send(request, *args, **kwargs)
 
-    def handle_request(self, request: httpcore.Request):
-        """Transform the request body before forwarding to the real transport."""
-        import sys, traceback
-        try:
-            url_str = str(request.url) if hasattr(request, 'url') else ""
-            
-            # Only intercept Cloud Code requests
-            if "cloudcode-pa.googleapis.com" not in str(request.url.host or ""):
-                return self._original.handle_request(request)
+        if not isinstance(body, dict) or "request" not in body:
+            return super().send(request, *args, **kwargs)
 
-            # Read the body from the stream iterator (consumes it)
-            body_bytes = b"".join(request.stream)
-            try:
-                body = json.loads(body_bytes)
-            except (json.JSONDecodeError, TypeError):
-                return self._forward(request, body_bytes)
-
-            if not isinstance(body, dict) or "request" not in body:
-                return self._forward(request, body_bytes)
-        except Exception as e:
-            traceback.print_exc(file=sys.stderr)
-            return self._forward(request, b"".join(request.stream) if hasattr(request, 'stream') else b"")
-        
         config = get_config()
         model = str(body.get("model", ""))
         project_id = str(body.get("project", ""))
@@ -118,50 +83,40 @@ class _AntigravityTransport:
                         elif "parameters" in tool:
                             tool["parameters"] = clean_json_schema(tool["parameters"])
 
-        new_body = json.dumps(envelope).encode("utf-8")
-
-        # --- Rewrite URL through endpoint fallback ---
+        # --- Rewrite URL ---
         endpoint = select_endpoint(config)
-        old_url = url_str if isinstance(url_str, str) else str(request.url)
-        new_url_str = old_url.replace("https://cloudcode-pa.googleapis.com", endpoint)
-        new_url = httpcore.URL(new_url_str)
+        new_url_str = url_str.replace("https://cloudcode-pa.googleapis.com", endpoint)
+        new_url = httpx.URL(new_url_str) if new_url_str != url_str else request.url
 
         # --- Rewrite headers ---
-        new_headers = build_antigravity_headers(header_style=header_style)
-        raw_headers: list[tuple[bytes, bytes]] = []
-        for item in request.headers:
-            if isinstance(item, (tuple, list)) and len(item) >= 2:
-                name, value = item[0], item[1]
-                lower = name.lower() if isinstance(name, bytes) else name.encode().lower()
-                if lower in (b"host", b"authorization", b"content-type", b"accept", b"accept-encoding"):
-                    raw_headers.append((name, value))
-        for key, val in new_headers.items():
-            raw_headers.append((key.encode(), val.encode()))
+        antigravity_headers = build_antigravity_headers(header_style=header_style)
+        new_headers = httpx.Headers(request.headers)
+        for key, val in antigravity_headers.items():
+            new_headers[key] = val
 
-        # --- Inject device fingerprint ---
+        # --- Inject fingerprint ---
         try:
             from .fingerprint import generate_fingerprint
-            fingerprint = generate_fingerprint()
-            if fingerprint:
-                fp_ua = fingerprint.get("userAgent")
-                if fp_ua and isinstance(fp_ua, str):
-                    raw_headers = [(k, v) for k, v in raw_headers if k.lower() != b"user-agent"]
-                    raw_headers.append((b"User-Agent", fp_ua.encode()))
-                fp_meta = fingerprint.get("clientMetadata")
-                if fp_meta:
-                    raw_headers = [(k, v) for k, v in raw_headers if k.lower() != b"client-metadata"]
-                    raw_headers.append((b"Client-Metadata", json.dumps(fp_meta).encode()))
+            fp = generate_fingerprint()
+            if fp:
+                ua = fp.get("userAgent")
+                if ua and isinstance(ua, str):
+                    new_headers["User-Agent"] = ua
+                cm = fp.get("clientMetadata")
+                if cm:
+                    new_headers["Client-Metadata"] = json.dumps(cm)
         except Exception:
             pass
 
-        new_request = httpcore.Request(
+        # Build a fresh request with the transformed body
+        new_request = httpx.Request(
             method=request.method,
-            url=str(new_url),
-            headers=raw_headers,
-            content=new_body,
-            extensions=request.extensions,
+            url=new_url,
+            headers=new_headers,
+            json=envelope,
         )
-        return self._original.handle_request(new_request)
+        new_request.read()  # pre-load body for non-streaming
+        return super().send(new_request, *args, **kwargs)
 
 
 def _is_claude_model(model: str) -> bool:
@@ -173,145 +128,60 @@ def _is_claude_model(model: str) -> bool:
 
 
 # =============================================================================
-# Response hook (header-level only — no body mutation)
+# Response hook
 # =============================================================================
 
 def _antigravity_response_hook(response: httpx.Response) -> None:
-    """Handle Antigravity-specific response quirks.
-
-    This hook does NOT modify the response body — only handles side effects."""
+    """Handle side effects after Antigravity responses (401 refresh, 429 rotation)."""
     from .config import get_config
-
     config = get_config()
 
-    # --- Token refresh on 401 ---
     if response.status_code == 401 and config.proactive_token_refresh:
         try:
             from .token import refresh_access_token
             from .storage import load_accounts
-
+            from .cli import sync_token_to_google_oauth
             accounts_data = load_accounts()
+            accs = accounts_data.get("accounts", [])
             active_idx = accounts_data.get("activeIndex", 0)
-            accounts = accounts_data.get("accounts", [])
-
-            if 0 <= active_idx < len(accounts):
-                acc = accounts[active_idx]
+            if 0 <= active_idx < len(accs):
+                acc = accs[active_idx]
                 refresh = acc.get("refreshToken", "")
                 if refresh:
-                    refreshed = refresh_access_token({"refresh": refresh})
-                    new_token = refreshed.get("access", "")
-                    if new_token:
-                        try:
-                            from .cli import sync_token_to_google_oauth
-                            sync_token_to_google_oauth(
-                                access_token=new_token,
-                                refresh_token=refresh,
-                                project_id=acc.get("projectId", ""),
-                                email=acc.get("email"),
-                                expires_ms=refreshed.get("expires"),
-                            )
-                        except Exception:
-                            pass
-                        logger.info("Token refreshed after 401 for %s", acc.get("email"))
-        except Exception as exc:
-            logger.warning("Token refresh failed after 401: %s", exc)
-
-    # --- Account rotation on rate limit ---
-    if response.status_code == 429 and config.switch_on_first_rate_limit:
-        try:
-            from .accounts.manager import AccountManager
-            from .accounts.ratelimit import mark_rate_limited
-
-            manager = AccountManager.load_from_disk()
-            active = manager.get_current_account_for_family("gemini")
-            if active:
-                retry_after_seconds = config.default_retry_after_seconds
-                retry_after_hdr = response.headers.get("Retry-After") or response.headers.get("retry-after")
-                if retry_after_hdr:
-                    try:
-                        retry_after_seconds = int(retry_after_hdr)
-                    except ValueError:
-                        pass
-
-                mark_rate_limited(active, float(retry_after_seconds * 1000), "gemini", "antigravity")
-                logger.warning("Rate limited on account %s", active.email)
-
-                next_acc = manager.get_current_or_next_for_family("gemini", strategy="hybrid")
-                if next_acc and next_acc.index != active.index:
-                    try:
-                        from .token import refresh_access_token
-                        refreshed = refresh_access_token({"refresh": next_acc.refresh_parts.refresh_token})
-                        access_token = refreshed.get("access", "")
-                        from .cli import sync_token_to_google_oauth
+                    r = refresh_access_token({"refresh": refresh})
+                    if r.get("access"):
                         sync_token_to_google_oauth(
-                            access_token=access_token,
-                            refresh_token=next_acc.refresh_parts.refresh_token,
-                            project_id=next_acc.refresh_parts.project_id or "",
-                            email=next_acc.email,
-                            expires_ms=refreshed.get("expires"),
+                            access_token=r["access"], refresh_token=refresh,
+                            project_id=acc.get("projectId", ""), email=acc.get("email"),
+                            expires_ms=r.get("expires"),
                         )
-                        logger.info("Rotated to account %s after rate limit", next_acc.email)
-                    except Exception as exc:
-                        logger.warning("Account rotation failed: %s", exc)
         except Exception as exc:
-            logger.warning("Rate limit handler error: %s", exc)
+            logger.warning("Token refresh failed: %s", exc)
 
-    # --- Mark endpoint failed on 5xx ---
     if response.status_code >= 500:
         try:
             from .endpoints import mark_endpoint_failed
-            req_url = str(response.request.url)
             from urllib.parse import urlparse
-            parsed = urlparse(req_url)
-            endpoint = f"https://{parsed.netloc}"
-            mark_endpoint_failed(endpoint)
-        except Exception:
-            pass
-
-    # --- Preview access error rewriting ---
-    if response.is_success:
-        try:
-            from .transform.response import rewrite_preview_access_error
-            body = json.loads(response.content)
-            if isinstance(body, dict):
-                response_inner = body.get("response")
-                inner = response_inner if isinstance(response_inner, dict) else body
-                error = inner.get("error") if isinstance(inner, dict) and isinstance(inner.get("error"), dict) else None
-                if error is not None:
-                    rewritten = rewrite_preview_access_error(inner, response.status_code, None)
-                    if rewritten is not None:
-                        inner["error"] = rewritten.get("error", inner.get("error", {}))
-                        response._content = json.dumps(body).encode("utf-8")
-        except Exception:
-            pass
-
-    # --- Session recovery detection ---
-    if config.session_recovery and response.is_success:
-        try:
-            from .recovery import detect_error_type, is_recoverable_error
-            body = json.loads(response.content)
-            if isinstance(body, dict):
-                response_inner = body.get("response")
-                inner = response_inner if isinstance(response_inner, dict) else body
-                error_obj = inner.get("error") if isinstance(inner, dict) else None
-                if error_obj and is_recoverable_error(error_obj):
-                    error_type = detect_error_type(error_obj)
-                    logger.info("Detected recoverable error: %s", error_type)
+            p = urlparse(str(response.request.url))
+            mark_endpoint_failed(f"https://{p.netloc}")
         except Exception:
             pass
 
 
 # =============================================================================
-# Install / uninstall
+# Install
 # =============================================================================
 
 def _wrap_http_client(http_client: httpx.Client) -> httpx.Client:
-    """No-op — transport wrapper disabled for debugging."""
-    return http_client
+    """Replace the httpx.Client with our AntigravityClient subclass."""
+    wrapped = _AntigravityClient(transport=http_client._transport)
+    if not wrapped.event_hooks.get("response"):
+        wrapped.event_hooks["response"] = []
+    wrapped.event_hooks["response"].append(_antigravity_response_hook)
+    return wrapped
 
 
 def install() -> bool:
-    """Monkey-patch GeminiCloudCodeClient.__init__ to wrap the transport."""
     global _PATCHED, _ORIGINAL_INIT
     if _PATCHED:
         return False
@@ -325,11 +195,11 @@ def install() -> bool:
 
     def _patched_init(self, *args: Any, **kwargs: Any) -> None:
         _ORIGINAL_INIT(self, *args, **kwargs)
-        _wrap_http_client(self._http)
+        self._http = _wrap_http_client(self._http)
 
     GeminiCloudCodeClient.__init__ = _patched_init
     _PATCHED = True
-    logger.info("Antigravity HTTP interceptor installed (transport-level)")
+    logger.info("Antigravity HTTP interceptor installed (httpx.Client subclass)")
     return True
 
 
