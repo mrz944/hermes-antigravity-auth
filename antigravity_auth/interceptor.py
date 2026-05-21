@@ -247,8 +247,8 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
 
     # Check for Antigravity-specific error patterns inside the response envelope
     response_inner = body.get("response")
-    inner: dict[str, Any] = response_inner if isinstance(response_inner, dict) else body
-    error: dict[str, Any] | None = inner.get("error") if isinstance(inner.get("error"), dict) else None
+    inner: Any = response_inner if isinstance(response_inner, dict) else body
+    error = inner.get("error") if isinstance(inner, dict) and isinstance(inner.get("error"), dict) else None
 
     if error is not None:
         # Rewrite preview access errors to more actionable messages
