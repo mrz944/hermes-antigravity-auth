@@ -24,6 +24,19 @@
 
 ## Quick Install
 
+<details open>
+<summary><b>For Humans</b></summary>
+
+**Option A: Let an LLM do it**
+
+Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
+
+```
+Install the hermes-antigravity-auth plugin for Hermes Agent by following the instructions at: https://raw.githubusercontent.com/Reedtrullz/hermes-antigravity-auth/main/README.md
+```
+
+**Option B: Manual setup**
+
 ### 1. Install the Python package
 
 ```bash
@@ -77,6 +90,44 @@ Or use the alias:
 ```bash
 hermes run "Hello" --model=ag/claude-opus-4-6-thinking
 ```
+
+</details>
+
+<details>
+<summary><b>For LLM Agents</b></summary>
+
+### Step-by-Step Instructions
+
+1. Install the Python package:
+   ```bash
+   pip install hermes-antigravity-auth
+   ```
+
+2. Copy the plugins to the Hermes plugins directory:
+   ```bash
+   cp -r plugins/model-providers/antigravity ~/.hermes/plugins/model-providers/
+   cp -r plugins/antigravity_tools ~/.hermes/plugins/antigravity-cli/
+   ```
+
+3. Enable the CLI plugin in `~/.hermes/config.yaml`:
+   ```yaml
+   plugins:
+     enabled:
+       - antigravity-cli
+   ```
+
+4. Authenticate:
+   ```bash
+   hermes antigravity login
+   ```
+
+### Verification
+
+```bash
+hermes run "Hello" --model=antigravity-claude-opus-4-6-thinking
+```
+
+</details>
 
 ---
 
