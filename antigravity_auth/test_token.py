@@ -1,0 +1,191 @@
+import os
+import tempfile
+import unittest
+import json
+import time
+from urllib.error import HTTPError
+from unittest.mock import patch, MagicMock
+
+from .token import (
+    parse_refresh_parts,
+    format_refresh_parts,
+    is_access_token_expired,
+    refresh_access_token,
+    AntigravityTokenRefreshError,
+)
+from .storage import (
+    save_accounts,
+    load_accounts,
+    sync_token_to_auth_json,
+    get_active_token_from_auth_json,
+)
+
+
+class TestToken(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_hermes_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = self.temp_dir.name
+
+    def tearDown(self):
+        if self.original_hermes_home is not None:
+            os.environ["HERMES_HOME"] = self.original_hermes_home
+        else:
+            os.environ.pop("HERMES_HOME", None)
+        self.temp_dir.cleanup()
+
+    def test_parse_refresh_parts(self):
+        res = parse_refresh_parts("refresh_123|project_abc|managed_xyz")
+        self.assertEqual(res["refreshToken"], "refresh_123")
+        self.assertEqual(res["projectId"], "project_abc")
+        self.assertEqual(res["managedProjectId"], "managed_xyz")
+
+        res_empty = parse_refresh_parts("")
+        self.assertEqual(res_empty["refreshToken"], "")
+        self.assertIsNone(res_empty["projectId"])
+        self.assertIsNone(res_empty["managedProjectId"])
+
+        res_partial = parse_refresh_parts("refresh_123")
+        self.assertEqual(res_partial["refreshToken"], "refresh_123")
+        self.assertIsNone(res_partial["projectId"])
+        self.assertIsNone(res_partial["managedProjectId"])
+
+        res_middle = parse_refresh_parts("refresh_123||managed_xyz")
+        self.assertEqual(res_middle["refreshToken"], "refresh_123")
+        self.assertIsNone(res_middle["projectId"])
+        self.assertEqual(res_middle["managedProjectId"], "managed_xyz")
+
+    def test_format_refresh_parts(self):
+        parts = {
+            "refreshToken": "refresh_123",
+            "projectId": "project_abc",
+            "managedProjectId": "managed_xyz",
+        }
+        self.assertEqual(format_refresh_parts(parts), "refresh_123|project_abc|managed_xyz")
+
+        parts_no_managed = {
+            "refreshToken": "refresh_123",
+            "projectId": "project_abc",
+        }
+        self.assertEqual(format_refresh_parts(parts_no_managed), "refresh_123|project_abc")
+
+        parts_no_project = {
+            "refreshToken": "refresh_123",
+            "managedProjectId": "managed_xyz",
+        }
+        self.assertEqual(format_refresh_parts(parts_no_project), "refresh_123||managed_xyz")
+
+    def test_is_access_token_expired(self):
+        self.assertTrue(is_access_token_expired({}))
+        self.assertTrue(is_access_token_expired({"access": ""}))
+        
+        current_time_ms = int(time.time() * 1000)
+        
+        auth_expired = {"access": "token", "expires": current_time_ms}
+        self.assertTrue(is_access_token_expired(auth_expired))
+
+        auth_close = {"access": "token", "expires": current_time_ms + 30000}
+        self.assertTrue(is_access_token_expired(auth_close))
+
+        auth_valid = {"access": "token", "expires": current_time_ms + 120000}
+        self.assertFalse(is_access_token_expired(auth_valid))
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_access_token_success(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({
+            "access_token": "new_access_token_abc",
+            "expires_in": 3600,
+            "refresh_token": "new_rotated_refresh_token_xyz"
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "test@example.com",
+                    "refreshToken": "old_refresh_123",
+                    "projectId": "proj_abc",
+                }
+            ]
+        }
+        save_accounts(accounts_data)
+
+        auth = {
+            "refresh": "old_refresh_123|proj_abc",
+            "access": "old_access",
+            "expires": 0,
+            "email": "test@example.com",
+        }
+
+        updated_auth = refresh_access_token(auth)
+        self.assertEqual(updated_auth["access"], "new_access_token_abc")
+        self.assertEqual(updated_auth["refresh"], "new_rotated_refresh_token_xyz|proj_abc")
+        self.assertTrue(updated_auth["expires"] > int(time.time() * 1000))
+
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "new_rotated_refresh_token_xyz")
+
+        active = get_active_token_from_auth_json()
+        self.assertEqual(active["access_token"], "new_access_token_abc")
+        self.assertEqual(active["refresh_token"], "new_rotated_refresh_token_xyz|proj_abc")
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_access_token_revoked(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.status = 400
+        mock_response.reason = "Bad Request"
+        mock_response.read.return_value = json.dumps({
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked."
+        }).encode("utf-8")
+        
+        mock_http_error = HTTPError(
+            url="https://oauth2.googleapis.com/token",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=None
+        )
+        mock_http_error.read = MagicMock(return_value=mock_response.read.return_value)
+        mock_urlopen.side_effect = mock_http_error
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "test@example.com",
+                    "refreshToken": "old_refresh_123",
+                    "projectId": "proj_abc",
+                }
+            ]
+        }
+        save_accounts(accounts_data)
+
+        sync_token_to_auth_json("old_access", "old_refresh_123|proj_abc", "proj_abc", "test@example.com")
+
+        auth = {
+            "refresh": "old_refresh_123|proj_abc",
+            "access": "old_access",
+            "expires": 0,
+            "email": "test@example.com",
+        }
+
+        with self.assertRaises(AntigravityTokenRefreshError) as context:
+            refresh_access_token(auth)
+
+        self.assertEqual(context.exception.code, "invalid_grant")
+        self.assertEqual(context.exception.status, 400)
+
+        loaded = load_accounts()
+        self.assertEqual(len(loaded["accounts"]), 0)
+
+        active = get_active_token_from_auth_json()
+        self.assertEqual(active["access_token"], "")
+        self.assertEqual(active["refresh_token"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()

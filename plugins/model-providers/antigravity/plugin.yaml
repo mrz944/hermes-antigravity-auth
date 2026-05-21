@@ -1,0 +1,5 @@
+name: antigravity
+kind: model-provider
+version: 1.6.0
+description: Google Antigravity OAuth — Claude, Gemini, GPT-OSS via Google credentials
+author: NoeFabris & Reedtrullz

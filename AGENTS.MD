@@ -142,3 +142,65 @@ Per-account device fingerprints stored in `antigravity-accounts.json`. Each fing
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Detailed architecture guide
 - [docs/ANTIGRAVITY_API_SPEC.md](docs/ANTIGRAVITY_API_SPEC.md) — API reference
 - [CHANGELOG.md](CHANGELOG.md) — Version history
+
+---
+
+## Python Port (Hermes Agent Plugin)
+
+This repo also hosts a Python port at `antigravity_auth/` for Hermes Agent.
+
+### Python Build & Test Commands
+
+```bash
+python3 -m pytest antigravity_auth/ -v          # Run all Python tests
+python3 -m pytest antigravity_auth/test_config.py  # Single test file
+python3 -m pytest -t "test name here"           # Single test by name
+pip install -e .                                # Editable install
+```
+
+### Python Module Structure
+
+```
+antigravity_auth/
+├── config.py             # YAML config loader with env var overrides
+├── oauth.py              # PKCE OAuth flow
+├── token.py              # Token refresh & validation
+├── storage.py            # Persistent account/credential storage
+├── cli.py                # CLI subcommand handlers
+├── search.py             # Google Search tool via Antigravity API
+├── recovery.py           # Session recovery (tool_result_missing)
+├── debug.py              # Structured logging with rotation
+├── verification.py       # Account health probe
+├── endpoints.py          # Endpoint fallback chain
+├── fingerprint.py        # Device fingerprint generation
+├── constants.py          # Platform detection, default headers
+├── accounts/             # Multi-account management
+│   ├── manager.py        # Account rotation, selection strategies
+│   ├── state.py          # Account state dataclasses
+│   ├── quota.py          # Dual quota pool tracking
+│   ├── ratelimit.py      # Rate limit handling & backoff
+│   ├── rotation.py       # Health-score-based rotation
+│   └── quota_display.py  # CLI quota progress bars
+└── transform/            # Request/response transformation
+    ├── messages.py       # OpenAI → Gemini contents format
+    ├── thinking.py       # Claude thinking block stripping
+    ├── schema.py         # JSON schema sanitization
+    ├── envelope.py       # Antigravity request wrapping
+    └── response.py       # SSE streaming response transformation
+```
+
+### Python Conventions
+- Tests colocated (`test_*.py` next to source)
+- Stdlib-only (urllib, json, dataclasses) — no heavy frameworks
+- Try/except with graceful degradation (fallback values, not crashes)
+- Named imports only — `from .module import Name`
+- PascalCase for classes, snake_case for functions/variables
+- 2-space indentation, double quotes, no semicolons
+- Config via `~/.hermes/config.yaml` with `HERMES_ANTIGRAVITY_*` env overrides
+
+### Key Differences from TypeScript Plugin
+- **Config path**: `~/.hermes/` not `~/.config/opencode/`
+- **Env prefix**: `HERMES_ANTIGRAVITY_*` not `OPENCODE_ANTIGRAVITY_*`
+- **Plugin system**: Hermes `ProviderProfile` + `register_provider()`, not OpenCode fetch interceptor
+- **No auto-update**: Hermes handles updates via pip
+- **No TUI**: Hermes provides its own CLI framework

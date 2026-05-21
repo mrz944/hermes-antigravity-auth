@@ -40,6 +40,22 @@ antigravity-debug-*.log
 # Test artifacts
 test-file.ts
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+.pytest_cache/
+
+# Sisyphus working files
+.sisyphus/
+
+# Local credentials (OAuth client ID/secret)
+antigravity_auth/_credentials.py
+
 # Local subrepos (not part of this project)
 CLIProxyAPI/
 LLM-API-Key-Proxy/
