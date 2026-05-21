@@ -1,6 +1,6 @@
 # antigravity_auth — Hermes Antigravity Plugin (Python)
 
-Python port of `opencode-antigravity-auth` for Hermes Agent. OAuth, request transform, quota management, and multi-account rotation.
+Hermes Agent plugin for Google Antigravity OAuth (Python). OAuth, request transform, quota management, multi-account rotation, session recovery. Ported from the original `opencode-antigravity-auth` npm plugin.
 
 ## Structure
 

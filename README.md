@@ -320,10 +320,12 @@ hermes-antigravity-auth/
 │       ├── schema.py        # JSON schema sanitization
 │       ├── envelope.py      # Antigravity request wrapping
 │       └── response.py      # SSE streaming response parsing
+├── docs/                    # Documentation
+│   ├── ARCHITECTURE.md      # Architecture guide
+│   └── ANTIGRAVITY_API_SPEC.md  # API reference
 ├── plugins/
 │   ├── model-providers/     # Hermes model provider plugin
 │   └── antigravity_tools/   # Hermes CLI plugin
-├── src/plugin/              # Original TypeScript plugin (OpenCode)
 ├── pyproject.toml           # Python package config
 ├── MIGRATION.md             # OpenCode → Hermes migration guide
 └── README.md                # This file
@@ -339,9 +341,6 @@ pip install -e ".[dev]"
 
 # Run tests
 python3 -m pytest antigravity_auth/ -v
-
-# TypeScript tests (original plugin)
-npm install && npm test
 ```
 
 ---
