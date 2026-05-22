@@ -380,6 +380,20 @@ def check_quotas_and_verify():
                 print(line)
         else:
             print(f"    Raw response: {quota}")
+
+        # ---- Account health probe (uses same access_token from above) ----
+        try:
+            from .verification import verify_account_access
+            probe = verify_account_access(acc, access_token, project_id=project_id)
+            if probe.status == "blocked":
+                print(f"    HEALTH: BLOCKED — {probe.message}")
+                if probe.verify_url:
+                    print(f"    Verification URL: {probe.verify_url}")
+            elif probe.status != "ok":
+                print(f"    HEALTH: ERROR — {probe.message}")
+        except Exception:
+            pass  # health probe is informational only — never fail the check command
+
     print("=" * 60)
 
 
