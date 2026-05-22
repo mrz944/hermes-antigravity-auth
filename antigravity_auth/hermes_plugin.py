@@ -60,3 +60,10 @@ def register(ctx):
     start_watchdog()
   except Exception:
     pass
+
+  # Start background version check (non-blocking, cached to once per day)
+  try:
+    from .version import start_version_check
+    start_version_check()
+  except Exception:
+    pass
