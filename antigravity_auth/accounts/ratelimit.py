@@ -5,6 +5,7 @@ import random
 import time
 from typing import Any
 
+from .._time_utils import now_ms
 from .state import (
     ManagedAccount,
     ModelFamily,
@@ -35,10 +36,6 @@ CAPACITY_RETRY_MAX_MS = 8000
 COOLDOWN_MS = 30_000
 MAX_CONSECUTIVE_FAILURES = 5
 FAILURE_TTL_MS = 3600_000  # 1 hour
-
-
-def _now_ms() -> float:
-  return time.time() * 1000
 
 
 def _generate_jitter(max_jitter_ms: int) -> float:
@@ -131,7 +128,7 @@ def calculate_backoff_ms(
 
 def clear_expired_rate_limits(state: RateLimitState) -> None:
   """Remove rate limit entries that have expired."""
-  now = _now_ms()
+  now = now_ms()
   for key in state.keys():
     val = state.get(key)
     if val is not None and now >= val:
@@ -141,7 +138,7 @@ def clear_expired_rate_limits(state: RateLimitState) -> None:
 def is_rate_limited_for_quota_key(state: RateLimitState, key: str) -> bool:
   """Check if a specific quota key is rate limited."""
   reset_time = state.get(key)
-  return reset_time is not None and _now_ms() < reset_time
+  return reset_time is not None and now_ms() < reset_time
 
 
 def is_rate_limited_for_family(state: RateLimitState, family: ModelFamily, model: str | None = None) -> bool:
@@ -191,7 +188,7 @@ class RateLimitTracker:
   def is_duplicate(self, account_index: int, quota_key: str) -> bool:
     """Check if this rate limit event is a duplicate within the dedup window."""
     dedup_key = f"{account_index}:{quota_key}"
-    now = _now_ms()
+    now = now_ms()
     last_seen = self._dedup_window.get(dedup_key)
     if last_seen is not None and (now - last_seen) < self._dedup_window_ms:
       return True
@@ -211,7 +208,7 @@ def mark_rate_limited(
 ) -> None:
   """Mark an account as rate limited for a given quota key."""
   key = get_quota_key(family, header_style, model)
-  account.rate_limit_reset_times.set(key, _now_ms() + retry_after_ms)
+  account.rate_limit_reset_times.set(key, now_ms() + retry_after_ms)
 
 
 def mark_rate_limited_with_reason(
@@ -227,7 +224,7 @@ def mark_rate_limited_with_reason(
 
   Returns the backoff time in ms.
   """
-  now = _now_ms()
+  now = now_ms()
 
   # TTL-based reset: if last failure was more than failure_ttl_ms ago, reset count
   if account.last_failure_time is not None and (now - account.last_failure_time) > failure_ttl_ms:
@@ -248,7 +245,7 @@ def is_account_cooling_down(account: ManagedAccount) -> bool:
   """Check if an account is in cooldown."""
   if account.cooling_down_until is None:
     return False
-  if _now_ms() >= account.cooling_down_until:
+  if now_ms() >= account.cooling_down_until:
     account.cooling_down_until = None
     account.cooldown_reason = None
     return False
@@ -285,7 +282,7 @@ def get_min_wait_time_for_family(
   if available:
     return 0
 
-  now = _now_ms()
+  now = now_ms()
   wait_times: list[float] = []
   for a in accounts:
     state = a.rate_limit_reset_times

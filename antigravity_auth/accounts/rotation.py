@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .._time_utils import now_ms
+
 
 DEFAULT_HEALTH_SCORE_CONFIG: dict[str, float] = {
   "initial": 70,
@@ -30,13 +32,13 @@ class HealthScoreTracker:
     state = self._scores.get(account_index)
     if state is None:
       return self._config["initial"]
-    now = _now_ms()
+    now = now_ms()
     hours_since_update = (now - state["last_updated"]) / (1000 * 60 * 60)
     recovered = int(hours_since_update * self._config["recovery_rate_per_hour"])
     return min(self._config["max_score"], state["score"] + recovered)
 
   def record_success(self, account_index: int) -> None:
-    now = _now_ms()
+    now = now_ms()
     current = self.get_score(account_index)
     self._scores[account_index] = {
       "score": min(self._config["max_score"], current + self._config["success_reward"]),
@@ -46,7 +48,7 @@ class HealthScoreTracker:
     }
 
   def record_rate_limit(self, account_index: int) -> None:
-    now = _now_ms()
+    now = now_ms()
     current = self.get_score(account_index)
     self._scores[account_index] = {
       "score": max(0, current + self._config["rate_limit_penalty"]),
@@ -55,7 +57,7 @@ class HealthScoreTracker:
     }
 
   def record_failure(self, account_index: int) -> None:
-    now = _now_ms()
+    now = now_ms()
     current = self.get_score(account_index)
     self._scores[account_index] = {
       "score": max(0, current + self._config["failure_penalty"]),
@@ -65,7 +67,3 @@ class HealthScoreTracker:
 
   def is_usable(self, account_index: int) -> bool:
     return self.get_score(account_index) >= self._config["min_usable"]
-
-
-def _now_ms() -> float:
-  return time.time() * 1000

@@ -6,15 +6,12 @@ import time
 import urllib.request
 from typing import Any
 
+from .._time_utils import now_ms
 from ..constants import ANTIGRAVITY_ENDPOINT_PROD
 
 FETCH_TIMEOUT_MS = 10000
 
 QuotaGroup = str  # "claude" | "gemini-pro" | "gemini-flash"
-
-
-def _now_ms() -> float:
-  return time.time() * 1000
 
 
 def normalize_remaining_fraction(value: Any) -> float:
@@ -103,7 +100,7 @@ def is_over_soft_quota_threshold(
     return False
   if cached_quota_updated_at is None:
     return False
-  age = _now_ms() - cached_quota_updated_at
+  age = now_ms() - cached_quota_updated_at
   if age > cache_ttl_ms:
     return False
 

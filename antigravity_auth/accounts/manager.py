@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Any
 
+from .._time_utils import now_ms
 from ..constants import ANTIGRAVITY_DEFAULT_PROJECT_ID
 from ..storage import get_accounts_json_path
 from .ratelimit import (
@@ -32,10 +33,6 @@ from .state import (
 
 SAVE_DEBOUNCE_MS = 1000
 PID_OFFSET_MAX = 10
-
-
-def _now_ms() -> float:
-  return time.time() * 1000
 
 
 def _clamp_non_negative_int(value: Any, fallback: int) -> int:
@@ -118,7 +115,7 @@ class AccountManager:
     if not accounts_data:
       return
 
-    base_now = _now_ms()
+    base_now = now_ms()
     loaded: list[ManagedAccount] = []
 
     for idx, acc_data in enumerate(accounts_data):
@@ -327,7 +324,7 @@ class AccountManager:
     candidates.sort(key=_sort_key)
     selected = candidates[0]
     if selected:
-      selected.last_used = _now_ms()
+      selected.last_used = now_ms()
       self._mark_touched_for_quota(selected, quota_key)
       self._current_account_by_family[family] = selected.index
     return selected
@@ -335,7 +332,7 @@ class AccountManager:
   def mark_account_used(self, account_index: int) -> None:
     for a in self._accounts:
       if a.index == account_index:
-        a.last_used = _now_ms()
+        a.last_used = now_ms()
         break
 
   def mark_switched(self, account: ManagedAccount, reason: str, family: ModelFamily) -> None:
@@ -512,7 +509,7 @@ class AccountManager:
     account = self._accounts[account_index] if 0 <= account_index < len(self._accounts) else None
     if account:
       account.cached_quota = quota_groups
-      account.cached_quota_updated_at = _now_ms()
+      account.cached_quota_updated_at = now_ms()
 
   def _is_over_soft_quota(
     self,
@@ -529,7 +526,7 @@ class AccountManager:
       return False
     if account.cached_quota_updated_at is None:
       return False
-    age = _now_ms() - account.cached_quota_updated_at
+    age = now_ms() - account.cached_quota_updated_at
     if age > cache_ttl_ms:
       return False
 
@@ -563,4 +560,4 @@ class AccountManager:
     return self._health_tracker
 
   def _mark_touched_for_quota(self, account: ManagedAccount, quota_key: str) -> None:
-    account.touched_for_quota[quota_key] = _now_ms()
+    account.touched_for_quota[quota_key] = now_ms()

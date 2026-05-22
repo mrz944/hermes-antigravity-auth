@@ -7,6 +7,8 @@ import secrets
 import uuid
 from typing import Any
 
+from ._time_utils import now_ms
+
 
 PLATFORM_CHOICES = ["darwin", "win32"]
 ARCHITECTURES = ["x64", "arm64"]
@@ -72,7 +74,7 @@ def generate_fingerprint() -> dict[str, Any]:
       "platform": _platform_to_display_name(platform),
       "pluginType": "GEMINI",
     },
-    "createdAt": _now_ms(),
+    "createdAt": now_ms(),
   }
 
 
@@ -83,7 +85,7 @@ def update_fingerprint_version(fingerprint: dict[str, Any]) -> bool:
   """
   changed = False
   if "createdAt" not in fingerprint:
-    fingerprint["createdAt"] = _now_ms()
+    fingerprint["createdAt"] = now_ms()
     changed = True
   if "apiClient" not in fingerprint:
     fingerprint["apiClient"] = _random_from(SDK_CLIENTS)
@@ -102,8 +104,3 @@ def build_fingerprint_headers(fingerprint: dict[str, Any] | None) -> dict[str, s
   if ua:
     return {"User-Agent": ua}
   return {}
-
-
-def _now_ms() -> float:
-  import time
-  return time.time() * 1000
