@@ -292,7 +292,7 @@ class AccountManager:
       return None
 
     idx = self._cursor % len(available)
-    self._cursor += 1
+    self._cursor = (self._cursor + 1) % 1_000_000
     return available[idx]
 
   def _select_hybrid(
@@ -477,7 +477,7 @@ class AccountManager:
     storage = {
       "version": 4,
       "accounts": accounts_data,
-      "activeIndex": claude_index,
+      "activeIndex": self._cursor,
       "activeIndexByFamily": {
         "claude": claude_index,
         "gemini": gemini_index,
