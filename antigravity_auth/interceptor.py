@@ -306,7 +306,7 @@ def install() -> bool:
     _wrap_http_client(self._http)
 
   def _patched_wrap_code_assist(*, project_id, model, inner_request, user_prompt_id=None):
-    if isinstance(inner_request, dict) and isinstance(model, str) and model.startswith("claude"):
+    if isinstance(inner_request, dict) and isinstance(model, str) and "claude" in model.lower():
       _inject_tool_call_ids(inner_request)
       _apply_claude_transforms(inner_request)
     return _ORIGINAL_WRAP_CODE_ASSIST(
