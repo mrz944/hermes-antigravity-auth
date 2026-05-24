@@ -268,7 +268,8 @@ class AccountManager:
     )
     if next_acc:
       self._mark_touched_for_quota(next_acc, quota_key)
-      self._current_account_by_family[family] = next_acc.index
+      with self._lock:
+        self._current_account_by_family[family] = next_acc.index
     return next_acc
 
   def _get_next_for_family(
@@ -291,8 +292,9 @@ class AccountManager:
     if not available:
       return None
 
-    idx = self._cursor % len(available)
-    self._cursor = (self._cursor + 1) % 1_000_000
+    with self._lock:
+      idx = self._cursor % len(available)
+      self._cursor = (self._cursor + 1) % 1_000_000
     return available[idx]
 
   def _select_hybrid(
@@ -327,7 +329,8 @@ class AccountManager:
     if selected:
       selected.last_used = now_ms()
       self._mark_touched_for_quota(selected, quota_key)
-      self._current_account_by_family[family] = selected.index
+      with self._lock:
+        self._current_account_by_family[family] = selected.index
     return selected
 
   def mark_account_used(self, account_index: int) -> None:
@@ -338,7 +341,8 @@ class AccountManager:
 
   def mark_switched(self, account: ManagedAccount, reason: str, family: ModelFamily) -> None:
     account.last_switch_reason = reason
-    self._current_account_by_family[family] = account.index
+    with self._lock:
+      self._current_account_by_family[family] = account.index
 
   # ========== Rate Limit Operations ==========
 
@@ -403,7 +407,8 @@ class AccountManager:
             (a for i, a in enumerate(self._accounts) if i != account_index and a.enabled is not False),
             None,
           )
-          self._current_account_by_family[family] = next_acc.index if next_acc else -1
+          with self._lock:
+            self._current_account_by_family[family] = next_acc.index if next_acc else -1
     self._request_save_to_disk()
     return True
 
@@ -419,16 +424,17 @@ class AccountManager:
       self._current_account_by_family["claude"] = -1
       self._current_account_by_family["gemini"] = -1
       return True
-    if self._cursor > account_index:
-      self._cursor -= 1
-    self._cursor = self._cursor % len(self._accounts)
-    for family in ("claude", "gemini"):
-      idx = self._current_account_by_family.get(family, 0)
-      if idx > account_index:
-        idx -= 1
-      if idx >= len(self._accounts):
-        idx = -1
-      self._current_account_by_family[family] = idx
+    with self._lock:
+      if self._cursor > account_index:
+        self._cursor -= 1
+      self._cursor = self._cursor % len(self._accounts)
+      for family in ("claude", "gemini"):
+        idx = self._current_account_by_family.get(family, 0)
+        if idx > account_index:
+          idx -= 1
+        if idx >= len(self._accounts):
+          idx = -1
+        self._current_account_by_family[family] = idx
     self._request_save_to_disk()
     return True
 
