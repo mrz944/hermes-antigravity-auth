@@ -27,7 +27,6 @@ def _set_oauth_env_from_credentials() -> None:
     os.environ.setdefault("HERMES_GEMINI_CLIENT_SECRET", ANTIGRAVITY_CLIENT_SECRET)
 
 
-_set_oauth_env_from_credentials()
 
 
 class AntigravityProfile(ProviderProfile):
@@ -74,16 +73,17 @@ antigravity = AntigravityProfile(
   default_headers={},
 )
 
-
 def _patch_hermes_model_picker() -> None:
   """Expose Antigravity branding in Hermes' built-in model pickers.
+
 
   Hermes v0.14 only auto-adds simple api-key model-provider plugins to
   `hermes model` and `/model`. OAuth providers need bespoke picker handling,
   so this plugin brands the supported google-gemini-cli picker entry as
   Antigravity while preserving its native Cloud Code runtime.
   """
-  # Import hermes_cli.models independently — the model patching must not
+  _set_oauth_env_from_credentials()
+  # Import hermes_cli.models independently
   # be gated on hermes_cli.providers being importable (it pulls in yaml
   # which may not be available in all environments).
   try:
