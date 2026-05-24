@@ -226,8 +226,8 @@ class AccountManager:
     current = self.get_current_account_for_family(family)
     if current:
       clear_expired_rate_limits(current.rate_limit_reset_times)
-      is_limited = is_rate_limited_for_header_style(
-        current.rate_limit_reset_times, family, header_style, model
+      is_limited = is_rate_limited_for_family(
+        current.rate_limit_reset_times, family, model
       )
       is_over = self._is_over_soft_quota(
         current, family, soft_quota_threshold_percent, soft_quota_cache_ttl_ms, model
