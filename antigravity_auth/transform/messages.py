@@ -88,7 +88,7 @@ def _content_to_parts(content: str | list | None) -> list[dict]:
   return []
 
 
-def _convert_tool_calls(tool_calls: list) -> list[dict]:
+def _convert_tool_calls(tool_calls: list, tool_call_id_to_name: dict[str, str]) -> list[dict]:
   """Parse OpenAI tool_calls [{function: {name, arguments: json_string}}] to
   Gemini [{functionCall: {name, args: parsed_dict}}]."""
   parts: list[dict] = []
@@ -109,7 +109,13 @@ def _convert_tool_calls(tool_calls: list) -> list[dict]:
       args = arguments_str
     else:
       args = {}
-    parts.append({"functionCall": {"name": name, "args": args}})
+    function_call = {"name": name, "args": args}
+    tool_call_id = call.get("id")
+    if tool_call_id:
+      function_call["id"] = tool_call_id
+      if name:
+        tool_call_id_to_name[str(tool_call_id)] = str(name)
+    parts.append({"functionCall": function_call})
   return parts
 
 
@@ -145,6 +151,7 @@ def transform_messages_to_contents(
   """
   system_texts: list[str] = []
   raw_contents: list[dict] = []
+  tool_call_id_to_name: dict[str, str] = {}
 
   for msg in messages:
     if not isinstance(msg, dict):
@@ -170,19 +177,23 @@ def transform_messages_to_contents(
     if role == "assistant":
       parts = _content_to_parts(content)
       if isinstance(tool_calls, list) and tool_calls:
-        parts.extend(_convert_tool_calls(tool_calls))
+        parts.extend(_convert_tool_calls(tool_calls, tool_call_id_to_name))
       if parts:
         raw_contents.append({"role": "model", "parts": parts})
       continue
 
     if role == "tool":
-      tool_name = msg.get("name", "")
+      tool_call_id = msg.get("tool_call_id")
+      tool_name = msg.get("name") or tool_call_id_to_name.get(str(tool_call_id), "")
       tool_content = msg.get("content", "")
+      function_response = {
+        "name": tool_name,
+        "response": {"content": tool_content},
+      }
+      if tool_call_id:
+        function_response["id"] = tool_call_id
       parts = [{
-        "functionResponse": {
-          "name": tool_name,
-          "response": {"content": tool_content},
-        }
+        "functionResponse": function_response
       }]
       raw_contents.append({"role": "user", "parts": parts})
       continue

@@ -88,6 +88,51 @@ class TestInjectToolCallIds(unittest.TestCase):
     self.assertEqual(
       req["contents"][0]["parts"][0]["functionCall"]["id"], "existing-id")
 
+  def test_generated_ids_skip_existing_tool_call_ids(self):
+    req = self._make_request([
+      {"role": "model", "parts": [
+        {"functionCall": {"name": "read", "args": {}, "id": "tool-call-1"}},
+        {"functionCall": {"name": "write", "args": {}}},
+      ]},
+    ])
+    _inject_tool_call_ids(req)
+    self.assertEqual(
+      req["contents"][0]["parts"][0]["functionCall"]["id"], "tool-call-1")
+    self.assertEqual(
+      req["contents"][0]["parts"][1]["functionCall"]["id"], "tool-call-2")
+
+  def test_existing_response_id_consumes_matching_pending_call(self):
+    req = self._make_request([
+      {"role": "model", "parts": [
+        {"functionCall": {"name": "read_file", "args": {"path": "a"}, "id": "call_1"}},
+        {"functionCall": {"name": "read_file", "args": {"path": "b"}, "id": "call_2"}},
+      ]},
+      {"role": "user", "parts": [
+        {"functionResponse": {"name": "read_file", "response": {"output": "a"}, "id": "call_1"}},
+        {"functionResponse": {"name": "read_file", "response": {"output": "b"}}},
+      ]},
+    ])
+    _inject_tool_call_ids(req)
+    self.assertEqual(
+      req["contents"][1]["parts"][0]["functionResponse"]["id"], "call_1")
+    self.assertEqual(
+      req["contents"][1]["parts"][1]["functionResponse"]["id"], "call_2")
+
+  def test_existing_function_call_id_is_reused_for_matching_response(self):
+    inner = {
+      "contents": [
+        {"role": "model", "parts": [
+          {"functionCall": {"name": "read_file", "args": {}, "id": "call_existing"}},
+        ]},
+        {"role": "user", "parts": [
+          {"functionResponse": {"name": "read_file", "response": {"ok": True}}},
+        ]},
+      ]
+    }
+    _inject_tool_call_ids(inner)
+    fr = inner["contents"][1]["parts"][0]["functionResponse"]
+    self.assertEqual(fr["id"], "call_existing")
+
   def test_response_without_matching_call_gets_no_id(self):
     req = self._make_request([
       {"role": "user", "parts": [

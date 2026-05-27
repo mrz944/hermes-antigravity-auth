@@ -194,7 +194,9 @@ class TestTransformMessagesToContents(unittest.TestCase):
     parts = contents[1]["parts"]
     self.assertEqual(len(parts), 2)
     self.assertEqual(parts[0], {"text": "Let me check"})
-    self.assertEqual(parts[1], {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}})
+    self.assertEqual(parts[1], {
+      "functionCall": {"name": "get_weather", "args": {"city": "Paris"}, "id": "call_abc"}
+    })
 
   def test_tool_result_message(self):
     messages = [
@@ -211,6 +213,28 @@ class TestTransformMessagesToContents(unittest.TestCase):
     fr_part = tool_content["parts"][0]
     self.assertEqual(fr_part["functionResponse"]["name"], "get_weather")
     self.assertEqual(fr_part["functionResponse"]["response"]["content"], "Sunny, 72°F")
+
+  def test_tool_call_id_preserved_and_recovers_response_name(self):
+    messages = [
+      {"role": "user", "content": "read"},
+      {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call_abc", "type": "function", "function": {
+          "name": "read_file",
+          "arguments": '{"path": "/tmp/a"}',
+        }}
+      ]},
+      {"role": "tool", "tool_call_id": "call_abc", "content": "ok"},
+    ]
+    contents, system = transform_messages_to_contents(messages)
+    self.assertIsNone(system)
+    function_call = contents[1]["parts"][0]["functionCall"]
+    function_response = contents[2]["parts"][0]["functionResponse"]
+    self.assertEqual(function_call["name"], "read_file")
+    self.assertEqual(function_call["args"], {"path": "/tmp/a"})
+    self.assertEqual(function_call["id"], "call_abc")
+    self.assertEqual(function_response["name"], "read_file")
+    self.assertEqual(function_response["id"], "call_abc")
+    self.assertEqual(function_response["response"], {"content": "ok"})
 
   def test_multi_part_content_text_and_image(self):
     messages = [
@@ -269,7 +293,10 @@ class TestTransformMessagesToContents(unittest.TestCase):
     self.assertEqual(len(contents), 2)
     self.assertEqual(contents[1]["role"], "model")
     self.assertEqual(len(contents[1]["parts"]), 1)
-    self.assertEqual(contents[1]["parts"][0], {"functionCall": {"name": "bash", "args": {"cmd": "ls"}}})
+    self.assertEqual(
+      contents[1]["parts"][0],
+      {"functionCall": {"name": "bash", "args": {"cmd": "ls"}, "id": "c1"}},
+    )
 
   def test_tool_calls_arguments_as_dict(self):
     """arguments may already be parsed as dict by some SDKs."""
@@ -333,5 +360,9 @@ class TestTransformMessagesToContents(unittest.TestCase):
     self.assertEqual(tool_entry["role"], "user")
     self.assertEqual(
       tool_entry["parts"][0],
-      {"functionResponse": {"name": "get_data", "response": {"content": "result data"}}},
+      {"functionResponse": {
+        "name": "get_data",
+        "response": {"content": "result data"},
+        "id": "tu1",
+      }},
     )

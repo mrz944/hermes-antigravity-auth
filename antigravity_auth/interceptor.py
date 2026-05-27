@@ -143,7 +143,26 @@ def _inject_tool_call_ids(inner_request: dict) -> None:
     return
 
   counter = 0
-  pending: dict = {}  # functionName -> [id, id, ...] (FIFO queue)
+  used_ids: set[str] = set()
+  pending: dict[str, list[Any]] = {}  # functionName -> [id, id, ...] (FIFO queue)
+
+  # Reserve existing functionCall IDs before generating new IDs so generated
+  # IDs never collide with IDs already present later in the request.
+  for content in contents:
+    if not isinstance(content, dict):
+      continue
+    parts = content.get("parts")
+    if not isinstance(parts, list):
+      continue
+    for part in parts:
+      if not isinstance(part, dict):
+        continue
+      fc = part.get("functionCall")
+      if not isinstance(fc, dict):
+        continue
+      call_id = fc.get("id")
+      if isinstance(call_id, str) and call_id:
+        used_ids.add(call_id)
 
   # Pass 1: assign IDs to functionCalls, build FIFO queues per name
   for content in contents:
@@ -156,9 +175,19 @@ def _inject_tool_call_ids(inner_request: dict) -> None:
       if not isinstance(part, dict):
         continue
       fc = part.get("functionCall")
-      if isinstance(fc, dict) and not fc.get("id"):
-        counter += 1
-        fc["id"] = f"tool-call-{counter}"
+      if isinstance(fc, dict):
+        if not fc.get("id"):
+          while True:
+            counter += 1
+            generated_id = f"tool-call-{counter}"
+            if generated_id not in used_ids:
+              break
+          fc["id"] = generated_id
+          used_ids.add(generated_id)
+        else:
+          call_id = fc.get("id")
+          if isinstance(call_id, str):
+            used_ids.add(call_id)
         name = str(fc.get("name") or f"tool-{counter}")
         pending.setdefault(name, []).append(fc["id"])
 
@@ -173,9 +202,16 @@ def _inject_tool_call_ids(inner_request: dict) -> None:
       if not isinstance(part, dict):
         continue
       fr = part.get("functionResponse")
-      if isinstance(fr, dict) and not fr.get("id"):
+      if isinstance(fr, dict):
+        response_id = fr.get("id")
         name = str(fr.get("name") or "")
         queue = pending.get(name, [])
+        if response_id:
+          try:
+            queue.remove(response_id)
+          except ValueError:
+            pass
+          continue
         if queue:
           fr["id"] = queue.pop(0)
 
