@@ -593,7 +593,7 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
   def test_const_to_enum(self):
     schema = {"const": "foo"}
     result = clean_json_schema(schema)
-    self.assertEqual(result, {"enum": ["foo"]})
+    self.assertEqual(result, {"enum": ["foo"], "type": "string"})
 
   def test_enum_hint_integration(self):
     schema = {"type": "string", "enum": ["a", "b", "c"]}
@@ -656,6 +656,38 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
     self.assertEqual(result["properties"]["name"]["type"], "string")
     self.assertIn("nullable", result["properties"]["name"]["description"])
     self.assertNotIn("required", result)
+
+  def test_numeric_enum_values_are_not_stringified(self):
+    schema = {"type": "object", "properties": {"n": {"enum": [1, 2, 3]}}}
+    out = clean_json_schema(schema)
+    self.assertEqual(out["properties"]["n"]["enum"], [1, 2, 3])
+    self.assertEqual(out["properties"]["n"]["type"], "integer")
+
+  def test_boolean_enum_values_are_not_stringified(self):
+    schema = {"type": "object", "properties": {"flag": {"enum": [True, False]}}}
+    out = clean_json_schema(schema)
+    self.assertEqual(out["properties"]["flag"]["enum"], [True, False])
+    self.assertEqual(out["properties"]["flag"]["type"], "boolean")
+
+  def test_property_named_enum_still_gets_enum_type_inferred(self):
+    schema = {"type": "object", "properties": {"enum": {"enum": ["a", "b"]}}}
+    out = clean_json_schema(schema)
+    self.assertEqual(out["properties"]["enum"]["enum"], ["a", "b"])
+    self.assertEqual(out["properties"]["enum"]["type"], "string")
+
+  def test_nested_nullable_required_field_is_removed_from_required(self):
+    schema = {
+      "type": "object",
+      "properties": {
+        "outer": {
+          "type": "object",
+          "required": ["maybe"],
+          "properties": {"maybe": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+        }
+      },
+    }
+    out = clean_json_schema(schema)
+    self.assertNotIn("maybe", out["properties"]["outer"].get("required", []))
 
   def test_unsupported_keywords_removed(self):
     schema = {"type": "string", "title": "Test", "$schema": "http://...", "$id": "test"}

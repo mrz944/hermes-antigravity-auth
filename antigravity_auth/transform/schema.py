@@ -61,14 +61,73 @@ def _score_schema_option(schema) -> tuple[int, str]:
   return (0, schema_type or "null")
 
 
-def _try_merge_enum_from_union(options: list) -> list[str] | None:
+def _primitive_enum_type(value) -> str | None:
+  """Returns the JSON schema primitive type for an enum value."""
+  if isinstance(value, bool):
+    return "boolean"
+  if isinstance(value, int):
+    return "integer"
+  if isinstance(value, float):
+    return "number"
+  if isinstance(value, str):
+    return "string"
+  return None
+
+
+def _infer_enum_type(enum_values) -> str | None:
+  """Infers a schema type when all enum values share one primitive type."""
+  if not isinstance(enum_values, list) or not enum_values:
+    return None
+
+  inferred_types = [_primitive_enum_type(value) for value in enum_values]
+  if any(inferred_type is None for inferred_type in inferred_types):
+    return None
+
+  first_type = inferred_types[0]
+  if all(inferred_type == first_type for inferred_type in inferred_types):
+    return first_type
+  return None
+
+
+def _infer_enum_types(schema):
+  """Recursively adds missing schema types for primitive enum schemas."""
+  if isinstance(schema, list):
+    return [_infer_enum_types(item) for item in schema]
+
+  if not isinstance(schema, dict):
+    return schema
+
+  result = {**schema}
+  if "type" not in result and isinstance(result.get("enum"), list):
+    enum_type = _infer_enum_type(result["enum"])
+    if enum_type:
+      result["type"] = enum_type
+
+  for key, value in list(result.items()):
+    if key == "enum" and isinstance(value, list):
+      continue
+    if isinstance(value, (dict, list)):
+      result[key] = _infer_enum_types(value)
+
+  return result
+
+
+def _schema_is_nullable(schema) -> bool:
+  """Returns True when a flattened schema carries the nullable hint."""
+  if not isinstance(schema, dict):
+    return False
+  description = schema.get("description")
+  return isinstance(description, str) and "nullable" in description
+
+
+def _try_merge_enum_from_union(options: list) -> list | None:
   """Checks if an anyOf/oneOf array represents enum choices.
   Returns merged enum values if so, otherwise None.
   """
   if not isinstance(options, list) or not options:
     return None
 
-  enum_values: list[str] = []
+  enum_values: list = []
 
   for option in options:
     if not isinstance(option, dict):
@@ -76,18 +135,18 @@ def _try_merge_enum_from_union(options: list) -> list[str] | None:
 
     # Check for const value
     if "const" in option:
-      enum_values.append(str(option["const"]))
+      enum_values.append(option["const"])
       continue
 
     # Check for single-value enum
     if isinstance(option.get("enum"), list) and len(option["enum"]) == 1:
-      enum_values.append(str(option["enum"][0]))
+      enum_values.append(option["enum"][0])
       continue
 
     # Check for multi-value enum (merge all values)
     if isinstance(option.get("enum"), list) and len(option["enum"]) > 0:
       for val in option["enum"]:
-        enum_values.append(str(val))
+        enum_values.append(val)
       continue
 
     # If option has complex structure, it's not a simple enum
@@ -310,7 +369,10 @@ def _flatten_any_of_one_of(schema):
       merged_enum = _try_merge_enum_from_union(options)
       if merged_enum is not None:
         rest = {k: v for k, v in result.items() if k != union_key}
-        result = {**rest, "type": "string", "enum": merged_enum}
+        result = {**rest, "enum": merged_enum}
+        enum_type = _infer_enum_type(merged_enum)
+        if enum_type and "type" not in result:
+          result["type"] = enum_type
         if parent_desc:
           result["description"] = parent_desc
         continue
@@ -319,8 +381,14 @@ def _flatten_any_of_one_of(schema):
       best_idx = 0
       best_score = -1
       all_types: list[str] = []
+      has_null_option = False
 
       for i, option in enumerate(options):
+        if isinstance(option, dict):
+          option_type = option.get("type")
+          if option_type == "null" or \
+             (isinstance(option_type, list) and "null" in option_type):
+            has_null_option = True
         score, type_name = _score_schema_option(option)
         if type_name:
           all_types.append(type_name)
@@ -349,6 +417,8 @@ def _flatten_any_of_one_of(schema):
         unique_types = list(dict.fromkeys(all_types))
         hint = f"Accepts: {' | '.join(unique_types)}"
         selected = _append_description_hint(selected, hint)
+        if has_null_option:
+          selected = _append_description_hint(selected, "nullable")
 
       # Replace result with selected schema, preserving other fields
       rest = {k: v for k, v in result.items() if k not in (union_key, "description")}
@@ -371,8 +441,7 @@ def _flatten_type_arrays(schema, _nullable_fields: set | None = None):
     return schema
 
   result = {**schema}
-  nullable_fields = set() if _nullable_fields is None else _nullable_fields
-  is_root = _nullable_fields is None
+  nullable_fields = set()
 
   # Handle type array at this level
   if isinstance(result.get("type"), list):
@@ -397,17 +466,15 @@ def _flatten_type_arrays(schema, _nullable_fields: set | None = None):
   if isinstance(result.get("properties"), dict):
     new_props = {}
     for prop_key, prop_value in result["properties"].items():
-      processed = _flatten_type_arrays(prop_value, nullable_fields)
+      processed = _flatten_type_arrays(prop_value)
       new_props[prop_key] = processed
       # Track nullable fields for required cleanup
-      if isinstance(processed, dict) and \
-         isinstance(processed.get("description"), str) and \
-         "nullable" in processed["description"]:
+      if _schema_is_nullable(processed):
         nullable_fields.add(prop_key)
     result["properties"] = new_props
 
-  # Remove nullable fields from required (only at root)
-  if is_root and isinstance(result.get("required"), list) and nullable_fields:
+  # Remove nullable fields from this object's own required array.
+  if isinstance(result.get("required"), list) and nullable_fields:
     filtered = [r for r in result["required"] if r not in nullable_fields]
     if filtered:
       result["required"] = filtered
@@ -540,6 +607,7 @@ def clean_json_schema(schema: dict) -> dict:
   # Phase 1: Convert and add hints
   result = _convert_refs_to_hints(result)
   result = _convert_const_to_enum(result)
+  result = _infer_enum_types(result)
   result = _add_enum_hints(result)
   result = _add_additional_properties_hints(result)
   result = _move_constraints_to_description(result)
@@ -547,6 +615,7 @@ def clean_json_schema(schema: dict) -> dict:
   # Phase 2: Flatten complex structures
   result = _merge_all_of(result)
   result = _flatten_any_of_one_of(result)
+  result = _infer_enum_types(result)
   result = _flatten_type_arrays(result)
 
   # Phase 3: Cleanup
