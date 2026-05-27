@@ -13,18 +13,26 @@ from providers.base import ProviderProfile
 # Hermes google_oauth module which reads HERMES_GEMINI_CLIENT_ID / SECRET.
 # ---------------------------------------------------------------------------
 def _set_oauth_env_from_credentials() -> None:
-  """Load antigravity OAuth creds from _credentials.py and export them as
-  the env vars that agent.google_oauth expects."""
+  """Load Antigravity OAuth creds and export the env vars that
+  agent.google_oauth expects."""
   if os.getenv("HERMES_GEMINI_CLIENT_ID") and os.getenv("HERMES_GEMINI_CLIENT_SECRET"):
-    return  # user already set explicit overrides — don't clobber
-  try:
-    from ._credentials import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-  except ImportError:
     return
-  if ANTIGRAVITY_CLIENT_ID:
-    os.environ.setdefault("HERMES_GEMINI_CLIENT_ID", ANTIGRAVITY_CLIENT_ID)
-  if ANTIGRAVITY_CLIENT_SECRET:
-    os.environ.setdefault("HERMES_GEMINI_CLIENT_SECRET", ANTIGRAVITY_CLIENT_SECRET)
+
+  client_id = os.getenv("ANTIGRAVITY_CLIENT_ID", "").strip()
+  client_secret = os.getenv("ANTIGRAVITY_CLIENT_SECRET", "").strip()
+
+  if not client_id or not client_secret:
+    try:
+      from ._credentials import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+      client_id = client_id or ANTIGRAVITY_CLIENT_ID
+      client_secret = client_secret or ANTIGRAVITY_CLIENT_SECRET
+    except ImportError:
+      pass
+
+  if client_id:
+    os.environ.setdefault("HERMES_GEMINI_CLIENT_ID", client_id)
+  if client_secret:
+    os.environ.setdefault("HERMES_GEMINI_CLIENT_SECRET", client_secret)
 
 
 

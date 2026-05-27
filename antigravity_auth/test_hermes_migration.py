@@ -75,6 +75,48 @@ class TestHermesMigrationIntegration(unittest.TestCase):
         with patch.dict(sys.modules, {"agent.google_oauth": None}):
             self.assertFalse(sync_token_to_google_oauth("access", "refresh"))
 
+    def test_provider_plugin_bridges_antigravity_env_credentials(self):
+        import importlib
+        import antigravity_auth
+
+        captured = []
+
+        class FakeProviderProfile:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_providers = types.ModuleType("providers")
+        fake_providers.register_provider = lambda profile: captured.append(profile)
+        fake_base = types.ModuleType("providers.base")
+        fake_base.ProviderProfile = FakeProviderProfile
+
+        had_attr = hasattr(antigravity_auth, "hermes_provider_plugin")
+        old_attr = getattr(antigravity_auth, "hermes_provider_plugin", None)
+        old_module = sys.modules.pop("antigravity_auth.hermes_provider_plugin", None)
+        try:
+            with patch.dict(sys.modules, {
+                "providers": fake_providers,
+                "providers.base": fake_base,
+            }), patch.dict(os.environ, {
+                "ANTIGRAVITY_CLIENT_ID": "ag-client-id",
+                "ANTIGRAVITY_CLIENT_SECRET": "ag-client-secret",
+            }, clear=False):
+                os.environ.pop("HERMES_GEMINI_CLIENT_ID", None)
+                os.environ.pop("HERMES_GEMINI_CLIENT_SECRET", None)
+                importlib.import_module("antigravity_auth.hermes_provider_plugin")
+                self.assertEqual(os.environ.get("HERMES_GEMINI_CLIENT_ID"), "ag-client-id")
+                self.assertEqual(os.environ.get("HERMES_GEMINI_CLIENT_SECRET"), "ag-client-secret")
+
+            self.assertEqual(captured[0].name, "google-gemini-cli")
+        finally:
+            sys.modules.pop("antigravity_auth.hermes_provider_plugin", None)
+            if old_module is not None:
+                sys.modules["antigravity_auth.hermes_provider_plugin"] = old_module
+            if had_attr:
+                setattr(antigravity_auth, "hermes_provider_plugin", old_attr)
+            elif hasattr(antigravity_auth, "hermes_provider_plugin"):
+                delattr(antigravity_auth, "hermes_provider_plugin")
+
     def test_install_plugins_writes_hermes_plugin_layout(self):
         from antigravity_auth.install_plugins import install_plugins
 
