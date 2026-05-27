@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth_sync import sync_token_to_all_auth_stores, sync_token_to_google_oauth
 from .oauth import authorize_antigravity, exchange_antigravity
-from .storage import load_accounts, save_accounts, sync_token_to_auth_json
+from .storage import load_accounts, save_accounts
 from .token import format_refresh_parts, parse_refresh_parts
 
 
@@ -285,19 +285,84 @@ def delete_account(email_or_index: str) -> bool:
         return False
 
     removed = accounts.pop(target_idx)
-    
+
     active_idx = accounts_data.get("activeIndex", 0)
-    if active_idx >= len(accounts):
-        accounts_data["activeIndex"] = max(0, len(accounts) - 1)
-    elif active_idx > target_idx:
-        accounts_data["activeIndex"] = active_idx - 1
+    if not isinstance(active_idx, int) or isinstance(active_idx, bool):
+        active_idx = 0
+    if not accounts:
+        accounts_data["activeIndex"] = 0
+    else:
+        if active_idx > target_idx:
+            active_idx -= 1
+        elif active_idx == target_idx:
+            active_idx = min(target_idx, len(accounts) - 1)
+        accounts_data["activeIndex"] = max(0, min(active_idx, len(accounts) - 1))
+
+    family_map = accounts_data.get("activeIndexByFamily")
+    if not isinstance(family_map, dict):
+        family_map = {}
+    if not accounts:
+        accounts_data["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+    else:
+        new_active_idx = accounts_data["activeIndex"]
+        adjusted_family_map = {}
+        for family in ("claude", "gemini"):
+            family_idx = family_map.get(family)
+            if not isinstance(family_idx, int) or isinstance(family_idx, bool):
+                family_idx = new_active_idx
+            elif family_idx > target_idx:
+                family_idx -= 1
+            elif family_idx == target_idx:
+                family_idx = new_active_idx
+            adjusted_family_map[family] = max(0, min(family_idx, len(accounts) - 1))
+        accounts_data["activeIndexByFamily"] = adjusted_family_map
 
     save_accounts(accounts_data)
     print(f"Removed account: {removed.get('email')}")
     
-    if not accounts:
+    if accounts:
+        active_idx = accounts_data.get("activeIndex", 0)
+        if not isinstance(active_idx, int) or isinstance(active_idx, bool):
+            active_idx = 0
+        active_idx = max(0, min(active_idx, len(accounts) - 1))
+        active = accounts[active_idx]
+        packed_refresh = format_refresh_parts({
+            "refreshToken": active.get("refreshToken", ""),
+            "projectId": active.get("projectId") or "",
+            "managedProjectId": active.get("managedProjectId") or "",
+        })
+        access_token = ""
+        expires_ms = None
+        sync_refresh = packed_refresh
+
         try:
-            sync_token_to_auth_json("", "", project_id="", set_active=False)
+            from .token import refresh_access_token
+            refreshed = refresh_access_token({
+                "refresh": packed_refresh,
+                "email": active.get("email"),
+            })
+            access_token = refreshed.get("access") or ""
+            expires_ms = refreshed.get("expires")
+            sync_refresh = refreshed.get("refresh") or packed_refresh
+        except Exception:
+            pass
+
+        try:
+            sync_token_to_all_auth_stores(
+                access_token=access_token,
+                refresh_token=sync_refresh,
+                project_id=active.get("projectId") or "",
+                email=active.get("email"),
+                expires_ms=expires_ms,
+                set_active=True,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            # Clear both auth.json and google_oauth.json. The google_oauth helper
+            # degrades gracefully if Hermes' native store is unavailable.
+            sync_token_to_all_auth_stores("", "", project_id="", email=None, set_active=False)
         except Exception:
             pass
 

@@ -224,6 +224,78 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
         self.assertEqual(remaining[0].index, 0)
         self.assertEqual(remaining[0].email, "bob@example.com")
 
+    def test_remove_last_account_persists_empty_accounts(self) -> None:
+        data = {
+            "version": 4,
+            "accounts": [{
+                "email": "alice@example.com",
+                "refreshToken": "refresh-alice",
+                "projectId": "proj-a",
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        manager = self._make_manager(data)
+
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            self.assertTrue(manager.remove_account(0))
+
+        with open(self.accounts_path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        self.assertEqual(stored["accounts"], [])
+        self.assertEqual(stored["activeIndexByFamily"], {"claude": 0, "gemini": 0})
+
+    def test_remove_active_last_index_selects_previous_remaining_account(self) -> None:
+        data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "alice@example.com",
+                    "refreshToken": "refresh-alice",
+                    "projectId": "proj-a",
+                },
+                {
+                    "email": "middle@example.com",
+                    "refreshToken": "refresh-middle",
+                    "projectId": "proj-middle",
+                },
+                {
+                    "email": "last-active@example.com",
+                    "refreshToken": "refresh-last",
+                    "projectId": "proj-last",
+                },
+            ],
+            "activeIndex": 2,
+            "cursor": 2,
+            "activeIndexByFamily": {"claude": 2, "gemini": 2},
+        }
+        manager = self._make_manager(data)
+
+        with mock.patch.object(manager, "_request_save_to_disk"):
+            self.assertTrue(manager.remove_account(2))
+
+        for family in ("claude", "gemini"):
+            current = manager.get_current_account_for_family(family)
+            self.assertIsNotNone(current)
+            assert current is not None
+            self.assertEqual(current.index, 1)
+            self.assertEqual(current.email, "middle@example.com")
+
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            self.assertTrue(manager.save_to_disk())
+
+        with open(self.accounts_path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        self.assertEqual(stored["activeIndex"], 1)
+        self.assertEqual(stored["activeIndexByFamily"], {"claude": 1, "gemini": 1})
+
     def test_set_enabled(self) -> None:
         """Toggling an account off reduces enabled count to zero."""
         data = {

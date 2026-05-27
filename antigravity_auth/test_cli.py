@@ -46,10 +46,171 @@ class TestCli(unittest.TestCase):
         ]
         save_accounts(accounts_data)
 
-        self.assertTrue(delete_account("to_delete@example.com"))
+        with patch("antigravity_auth.token.refresh_access_token", return_value={
+            "access": "access-keep",
+            "refresh": "ref2|p2",
+            "expires": 123,
+        }), patch("antigravity_auth.cli.sync_token_to_all_auth_stores"):
+            self.assertTrue(delete_account("to_delete@example.com"))
         loaded = load_accounts()
         self.assertEqual(len(loaded["accounts"]), 1)
         self.assertEqual(loaded["accounts"][0]["email"], "keep@example.com")
+
+    def test_delete_active_account_syncs_next_account(self):
+        from .storage import load_accounts, save_accounts
+        accounts_data = load_accounts()
+        accounts_data["accounts"] = [
+            {"email": "to_delete@example.com", "refreshToken": "raw-delete", "projectId": "proj-delete"},
+            {
+                "email": "keep@example.com",
+                "refreshToken": "raw-keep",
+                "projectId": "proj-keep",
+                "managedProjectId": "managed-keep",
+            },
+        ]
+        accounts_data["activeIndex"] = 0
+        accounts_data["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+        save_accounts(accounts_data)
+
+        refresh_calls = []
+
+        def fake_refresh(auth, **kwargs):
+            refresh_calls.append(auth)
+            return {
+                "access": "access-keep",
+                "refresh": "rotated-keep|proj-keep|managed-keep",
+                "expires": 456,
+            }
+
+        with patch("antigravity_auth.token.refresh_access_token", side_effect=fake_refresh), \
+             patch("antigravity_auth.cli.sync_token_to_all_auth_stores") as mock_sync:
+            self.assertTrue(delete_account("0"))
+
+        loaded = load_accounts()
+        self.assertEqual(len(loaded["accounts"]), 1)
+        self.assertEqual(loaded["accounts"][0]["email"], "keep@example.com")
+        self.assertEqual(refresh_calls, [{
+            "refresh": "raw-keep|proj-keep|managed-keep",
+            "email": "keep@example.com",
+        }])
+        mock_sync.assert_called_once_with(
+            access_token="access-keep",
+            refresh_token="rotated-keep|proj-keep|managed-keep",
+            project_id="proj-keep",
+            email="keep@example.com",
+            expires_ms=456,
+            set_active=True,
+        )
+
+    def test_delete_active_account_syncs_next_account_when_refresh_fails(self):
+        from .storage import load_accounts, save_accounts
+        accounts_data = load_accounts()
+        accounts_data["accounts"] = [
+            {"email": "to_delete@example.com", "refreshToken": "raw-delete", "projectId": "proj-delete"},
+            {
+                "email": "keep@example.com",
+                "refreshToken": "raw-keep",
+                "projectId": "proj-keep",
+                "managedProjectId": "managed-keep",
+            },
+        ]
+        accounts_data["activeIndex"] = 0
+        accounts_data["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+        save_accounts(accounts_data)
+
+        with patch("antigravity_auth.token.refresh_access_token", side_effect=RuntimeError("offline")), \
+             patch("antigravity_auth.cli.sync_token_to_all_auth_stores") as mock_sync:
+            self.assertTrue(delete_account("0"))
+
+        loaded = load_accounts()
+        self.assertEqual(len(loaded["accounts"]), 1)
+        self.assertEqual(loaded["accounts"][0]["email"], "keep@example.com")
+        mock_sync.assert_called_once_with(
+            access_token="",
+            refresh_token="raw-keep|proj-keep|managed-keep",
+            project_id="proj-keep",
+            email="keep@example.com",
+            expires_ms=None,
+            set_active=True,
+        )
+
+    def test_delete_before_active_account_updates_family_indices(self):
+        from .storage import load_accounts, save_accounts
+        accounts_data = load_accounts()
+        accounts_data["accounts"] = [
+            {"email": "delete@example.com", "refreshToken": "raw-delete", "projectId": "proj-delete"},
+            {"email": "middle@example.com", "refreshToken": "raw-middle", "projectId": "proj-middle"},
+            {
+                "email": "keep-active@example.com",
+                "refreshToken": "raw-active",
+                "projectId": "proj-active",
+                "managedProjectId": "managed-active",
+            },
+        ]
+        accounts_data["activeIndex"] = 2
+        accounts_data["activeIndexByFamily"] = {"claude": 2, "gemini": 2}
+        save_accounts(accounts_data)
+
+        refresh_calls = []
+
+        def fake_refresh(auth, **kwargs):
+            refresh_calls.append(auth)
+            return {
+                "access": "access-active",
+                "refresh": "rotated-active|proj-active|managed-active",
+                "expires": 789,
+            }
+
+        with patch("antigravity_auth.token.refresh_access_token", side_effect=fake_refresh), \
+             patch("antigravity_auth.cli.sync_token_to_all_auth_stores") as mock_sync:
+            self.assertTrue(delete_account("0"))
+
+        loaded = load_accounts()
+        self.assertEqual([acc["email"] for acc in loaded["accounts"]], [
+            "middle@example.com",
+            "keep-active@example.com",
+        ])
+        self.assertEqual(loaded["activeIndex"], 1)
+        self.assertEqual(loaded["activeIndexByFamily"], {"claude": 1, "gemini": 1})
+        self.assertEqual(refresh_calls, [{
+            "refresh": "raw-active|proj-active|managed-active",
+            "email": "keep-active@example.com",
+        }])
+        mock_sync.assert_called_once_with(
+            access_token="access-active",
+            refresh_token="rotated-active|proj-active|managed-active",
+            project_id="proj-active",
+            email="keep-active@example.com",
+            expires_ms=789,
+            set_active=True,
+        )
+
+    def test_delete_last_account_clears_runtime_credentials(self):
+        from .storage import load_accounts, save_accounts
+        accounts_data = load_accounts()
+        accounts_data["accounts"] = [{
+            "email": "last@example.com",
+            "refreshToken": "raw-last",
+            "projectId": "proj-last",
+        }]
+        accounts_data["activeIndex"] = 0
+        save_accounts(accounts_data)
+
+        with patch("antigravity_auth.cli.sync_token_to_all_auth_stores") as mock_sync:
+            self.assertTrue(delete_account("last@example.com"))
+
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"], [])
+        mock_sync.assert_called_once()
+        args, kwargs = mock_sync.call_args
+        if args:
+            self.assertEqual(args[:2], ("", ""))
+        else:
+            self.assertEqual(kwargs.get("access_token"), "")
+            self.assertEqual(kwargs.get("refresh_token"), "")
+        self.assertEqual(kwargs.get("project_id"), "")
+        self.assertIsNone(kwargs.get("email"))
+        self.assertFalse(kwargs.get("set_active"))
 
     def test_check_quotas_refreshes_with_packed_project_id(self):
         from .storage import save_accounts

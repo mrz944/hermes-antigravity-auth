@@ -405,6 +405,7 @@ class AccountManager:
       self._cursor = 0
       self._current_account_by_family["claude"] = -1
       self._current_account_by_family["gemini"] = -1
+      self.save_to_disk()
       return True
     with self._lock:
       if self._cursor > account_index:
@@ -412,10 +413,13 @@ class AccountManager:
       self._cursor = self._cursor % len(self._accounts)
       for family in ("claude", "gemini"):
         idx = self._current_account_by_family.get(family, 0)
-        if idx > account_index:
+        if not isinstance(idx, int) or isinstance(idx, bool):
+          idx = 0
+        elif idx > account_index:
           idx -= 1
-        if idx >= len(self._accounts):
-          idx = -1
+        elif idx == account_index:
+          idx = min(account_index, len(self._accounts) - 1)
+        idx = max(0, min(idx, len(self._accounts) - 1))
         self._current_account_by_family[family] = idx
     self._request_save_to_disk()
     return True
