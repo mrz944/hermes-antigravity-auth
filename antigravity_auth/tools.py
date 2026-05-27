@@ -38,10 +38,22 @@ def _register_search_tool(registry: Any) -> None:
             urls = None
 
         accounts_data = load_accounts()
-        active_idx = accounts_data.get("activeIndex", 0)
+        active_idx_raw = accounts_data.get("activeIndex", 0)
         accounts = accounts_data.get("accounts", [])
         if not accounts:
             return json.dumps({"error": "No Antigravity accounts configured"})
+
+        invalid_active_idx_msg = (
+            "Google Antigravity search unavailable: active account index is invalid. "
+            "Run `hermes antigravity accounts` to select an account."
+        )
+        if type(active_idx_raw) is int:
+            active_idx = active_idx_raw
+        else:
+            return invalid_active_idx_msg
+
+        if not isinstance(accounts, list) or not (0 <= active_idx < len(accounts)):
+            return invalid_active_idx_msg
 
         acc = accounts[active_idx]
         refresh_token = acc.get("refreshToken", "")
