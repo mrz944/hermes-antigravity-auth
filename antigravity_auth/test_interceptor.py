@@ -2,7 +2,9 @@
 
 import json
 import os
+import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -205,6 +207,7 @@ class TestRequestHook(unittest.TestCase):
             self.hook(r)
 
         self.assertEqual(r.headers["Authorization"], "Bearer selected-access")
+        self.assertEqual(r.extensions["antigravity_selected_account_index"], 7)
         self.assertEqual(fake_mgr.family, "claude")
         self.assertEqual(fake_mgr.model, "claude-sonnet-4-6-thinking")
         self.assertEqual(fake_mgr.header_style, "antigravity")
@@ -598,9 +601,9 @@ class TestResponseHook(unittest.TestCase):
             "soft_quota_cache_ttl_ms": compute_soft_quota_cache_ttl_ms(5, 15),
         })
 
-    def test_401_syncs_rotated_refresh_token_to_google_oauth(self):
+    def test_401_syncs_rotated_refresh_token_to_all_auth_stores(self):
         from antigravity_auth.interceptor import _antigravity_response_hook
-        from antigravity_auth.storage import save_accounts
+        from antigravity_auth.storage import load_accounts, save_accounts
 
         save_accounts({
             "version": 4,
@@ -615,12 +618,304 @@ class TestResponseHook(unittest.TestCase):
         req = httpx.Request("POST", "https://cloudcode-pa.googleapis.com/v1internal:generateContent")
         response = httpx.Response(401, request=req)
         synced = []
+        config = type("Config", (), {
+            "proactive_token_refresh": True,
+            "cli_first": False,
+        })()
 
-        with patch("antigravity_auth.token.refresh_access_token", return_value={
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.token.refresh_access_token",
+            return_value={
             "access": "new-access",
-            "refresh": "new-refresh|proj-1",
+            "refresh": "new-refresh|proj-2|managed-2",
             "expires": 123,
-        }), patch("antigravity_auth.auth_sync.sync_token_to_google_oauth", side_effect=lambda **kw: synced.append(kw) or True):
+            },
+        ), patch(
+            "antigravity_auth.auth_sync.sync_token_to_all_auth_stores",
+            side_effect=lambda **kw: synced.append(kw) or True,
+        ):
             _antigravity_response_hook(response)
 
-        self.assertEqual(synced[0]["refresh_token"], "new-refresh|proj-1")
+        self.assertEqual(synced[0], {
+            "access_token": "new-access",
+            "refresh_token": "new-refresh|proj-2|managed-2",
+            "project_id": "proj-2",
+            "email": "user@example.com",
+            "expires_ms": 123,
+            "set_active": True,
+        })
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "new-refresh")
+        self.assertEqual(loaded["accounts"][0]["projectId"], "proj-2")
+        self.assertEqual(loaded["accounts"][0]["managedProjectId"], "managed-2")
+
+    def test_401_refreshes_selected_claude_account_not_global_active(self):
+        from antigravity_auth.interceptor import _antigravity_response_hook
+        from antigravity_auth.storage import load_accounts, save_accounts
+
+        save_accounts({
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "global-active@example.com",
+                    "refreshToken": "global-refresh",
+                    "projectId": "proj-global",
+                },
+                {
+                    "email": "claude@example.com",
+                    "refreshToken": "claude-refresh",
+                    "projectId": "proj-claude",
+                    "managedProjectId": "managed-claude",
+                },
+            ],
+            "activeIndex": 0,
+            "activeIndexByFamily": {"claude": 1, "gemini": 0},
+        })
+        body = {
+            "project": "proj",
+            "model": "claude-sonnet-4-6-thinking",
+            "request": {"contents": []},
+        }
+        req = httpx.Request(
+            "POST",
+            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+            json=body,
+        )
+        req.read()
+        req.extensions["antigravity_header_style"] = "antigravity"
+        req.extensions["antigravity_model_family"] = "claude"
+        req.extensions["antigravity_selected_account_index"] = 1
+        response = httpx.Response(401, request=req)
+        refresh_calls = []
+        sync_calls = []
+        config = type("Config", (), {
+            "proactive_token_refresh": True,
+            "cli_first": False,
+        })()
+
+        def fake_refresh(auth, **kwargs):
+            refresh_calls.append(auth)
+            return {
+                "access": "new-claude-access",
+                "refresh": "rotated-claude|proj-rotated|managed-rotated",
+                "expires": 456,
+            }
+
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.token.refresh_access_token",
+            side_effect=fake_refresh,
+        ), patch(
+            "antigravity_auth.auth_sync.sync_token_to_all_auth_stores",
+            side_effect=lambda **kw: sync_calls.append(kw) or True,
+        ):
+            _antigravity_response_hook(response)
+
+        self.assertEqual(refresh_calls, [{
+            "refresh": "claude-refresh|proj-claude|managed-claude",
+            "email": "claude@example.com",
+        }])
+        self.assertEqual(sync_calls[0], {
+            "access_token": "new-claude-access",
+            "refresh_token": "rotated-claude|proj-rotated|managed-rotated",
+            "project_id": "proj-rotated",
+            "email": "claude@example.com",
+            "expires_ms": 456,
+            "set_active": True,
+        })
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "global-refresh")
+        self.assertEqual(loaded["accounts"][1]["refreshToken"], "rotated-claude")
+        self.assertEqual(loaded["accounts"][1]["projectId"], "proj-rotated")
+        self.assertEqual(loaded["accounts"][1]["managedProjectId"], "managed-rotated")
+
+    def test_403_rotation_syncs_next_account_to_all_auth_stores(self):
+        from antigravity_auth.interceptor import _antigravity_response_hook
+
+        class FakeRefreshParts:
+            def __init__(self, refresh_token, project_id, managed_project_id):
+                self.refresh_token = refresh_token
+                self.project_id = project_id
+                self.managed_project_id = managed_project_id
+
+        class FakeAccount:
+            def __init__(self, index, email, refresh_token, project_id, managed_project_id=""):
+                self.index = index
+                self.email = email
+                self.refresh_parts = FakeRefreshParts(refresh_token, project_id, managed_project_id)
+                self.cooling_down_until = None
+                self.cooldown_reason = None
+
+        class FakeManager:
+            def __init__(self):
+                self.active = FakeAccount(0, "active@example.com", "active-refresh", "proj-active")
+                self.next = FakeAccount(1, "next@example.com", "next-refresh", "proj-next", "managed-next")
+
+            def get_current_account_for_family(self, family):
+                return self.active
+
+            def get_current_or_next_for_family(self, family, **kwargs):
+                return self.next
+
+            def save_to_disk(self):
+                return True
+
+        config = type("Config", (), {
+            "proactive_token_refresh": False,
+            "switch_on_first_rate_limit": True,
+            "cli_first": False,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "default_retry_after_seconds": 10,
+        })()
+        response = self._make_response(model="gemini-3.1-pro-high", status=403)
+        sync_calls = []
+
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.accounts.manager.get_or_create_global_manager",
+            return_value=FakeManager(),
+        ), patch("antigravity_auth.token.refresh_access_token", return_value={
+            "access": "rotated-access",
+            "refresh": "rotated-refresh|proj-rotated|managed-rotated",
+            "expires": 789,
+        }), patch(
+            "antigravity_auth.auth_sync.sync_token_to_all_auth_stores",
+            side_effect=lambda **kw: sync_calls.append(kw) or True,
+        ):
+            _antigravity_response_hook(response)
+
+        self.assertEqual(sync_calls, [{
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh|proj-rotated|managed-rotated",
+            "project_id": "proj-rotated",
+            "email": "next@example.com",
+            "expires_ms": 789,
+            "set_active": True,
+        }])
+
+    def test_429_rotation_syncs_next_account_to_all_auth_stores(self):
+        from antigravity_auth.interceptor import _antigravity_response_hook
+
+        class FakeRefreshParts:
+            def __init__(self, refresh_token, project_id, managed_project_id):
+                self.refresh_token = refresh_token
+                self.project_id = project_id
+                self.managed_project_id = managed_project_id
+
+        class FakeAccount:
+            def __init__(self, index, email, refresh_token, project_id, managed_project_id=""):
+                self.index = index
+                self.email = email
+                self.refresh_parts = FakeRefreshParts(refresh_token, project_id, managed_project_id)
+
+        class FakeManager:
+            def __init__(self):
+                self.active = FakeAccount(0, "active@example.com", "active-refresh", "proj-active")
+                self.next = FakeAccount(1, "next@example.com", "next-refresh", "proj-next", "managed-next")
+
+            def get_current_account_for_family(self, family):
+                return self.active
+
+            def get_current_or_next_for_family(self, family, **kwargs):
+                return self.next
+
+            def save_to_disk(self):
+                return True
+
+        config = type("Config", (), {
+            "proactive_token_refresh": False,
+            "switch_on_first_rate_limit": True,
+            "cli_first": False,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "default_retry_after_seconds": 10,
+        })()
+        response = self._make_response(model="gemini-3.1-pro-high", status=429)
+        sync_calls = []
+
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.accounts.manager.get_or_create_global_manager",
+            return_value=FakeManager(),
+        ), patch("antigravity_auth.accounts.ratelimit.mark_rate_limited"), patch(
+            "antigravity_auth.token.refresh_access_token",
+            return_value={
+                "access": "rotated-access",
+                "refresh": "rotated-refresh|proj-rotated|managed-rotated",
+                "expires": 987,
+            },
+        ), patch(
+            "antigravity_auth.auth_sync.sync_token_to_all_auth_stores",
+            side_effect=lambda **kw: sync_calls.append(kw) or True,
+        ):
+            _antigravity_response_hook(response)
+
+        self.assertEqual(sync_calls, [{
+            "access_token": "rotated-access",
+            "refresh_token": "rotated-refresh|proj-rotated|managed-rotated",
+            "project_id": "proj-rotated",
+            "email": "next@example.com",
+            "expires_ms": 987,
+            "set_active": True,
+        }])
+
+    def test_token_watchdog_resolves_family_index_when_global_active_invalid(self):
+        from antigravity_auth.storage import save_accounts
+        from antigravity_auth.token_watchdog import _refresh_if_needed
+
+        save_accounts({
+            "version": 4,
+            "accounts": [
+                {"email": "active@example.com", "refreshToken": "active-refresh", "projectId": "proj-active"},
+                {
+                    "email": "family@example.com",
+                    "refreshToken": "family-refresh",
+                    "projectId": "proj-family",
+                    "managedProjectId": "managed-family",
+                },
+            ],
+            "activeIndex": 99,
+            "activeIndexByFamily": {"claude": 1, "gemini": 0},
+            "cursor": 0,
+        })
+
+        fake_agent = types.ModuleType("agent")
+        fake_google_oauth = types.ModuleType("agent.google_oauth")
+        setattr(fake_google_oauth, "load_credentials", lambda: type("Creds", (), {
+            "refresh_token": "stored-refresh",
+            "expires_ms": 0,
+        })())
+        original_agent = sys.modules.get("agent")
+        original_google_oauth = sys.modules.get("agent.google_oauth")
+        sys.modules["agent"] = fake_agent
+        sys.modules["agent.google_oauth"] = fake_google_oauth
+        refresh_calls = []
+        config = type("Config", (), {"proactive_refresh_buffer_seconds": 1800})()
+
+        def fake_refresh(auth, **kwargs):
+            refresh_calls.append(auth)
+            return {"access": "access-family", "refresh": "family-rotated|proj-family", "expires": 123}
+
+        try:
+            with patch("antigravity_auth.token.refresh_access_token", side_effect=fake_refresh), \
+                 patch("antigravity_auth.auth_sync.sync_token_to_all_auth_stores", return_value=True), \
+                 patch("antigravity_auth.auth_sync.sync_token_to_google_oauth", return_value=True):
+                _refresh_if_needed(config)
+        finally:
+            if original_agent is None:
+                sys.modules.pop("agent", None)
+            else:
+                sys.modules["agent"] = original_agent
+            if original_google_oauth is None:
+                sys.modules.pop("agent.google_oauth", None)
+            else:
+                sys.modules["agent.google_oauth"] = original_google_oauth
+
+        self.assertEqual(refresh_calls, [{
+            "refresh": "family-refresh|proj-family|managed-family",
+            "email": "family@example.com",
+        }])

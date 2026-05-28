@@ -62,10 +62,13 @@ def _refresh_if_needed(config) -> None:
 
     # Token is within buffer window or expired — refresh
     try:
-        from .auth_sync import sync_token_to_google_oauth
+        from .auth_sync import sync_token_to_all_auth_stores
+        from .storage import resolve_active_account_index
         accounts_data = load_accounts()
-        active_idx = accounts_data.get("activeIndex", 0)
         accounts = accounts_data.get("accounts", [])
+        if not isinstance(accounts, list) or not accounts:
+            return
+        active_idx = resolve_active_account_index(accounts_data)
 
         if 0 <= active_idx < len(accounts):
             acc = accounts[active_idx]
@@ -81,12 +84,13 @@ def _refresh_if_needed(config) -> None:
             new_token = refreshed.get("access", "")
             if new_token:
                 synced_refresh = refreshed.get("refresh") or packed_refresh
-                sync_token_to_google_oauth(
+                sync_token_to_all_auth_stores(
                     access_token=new_token,
                     refresh_token=synced_refresh,
                     project_id=acc.get("projectId") or "",
                     email=acc.get("email"),
                     expires_ms=refreshed.get("expires"),
+                    set_active=True,
                 )
                 logger.debug("Proactively refreshed token for %s", acc.get("email", "unknown"))
     except Exception as exc:

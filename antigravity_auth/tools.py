@@ -27,7 +27,7 @@ def register_tools() -> None:
 def _register_search_tool(registry: Any) -> None:
     """Register execute_search as google_antigravity_search."""
     from .search import execute_search, SearchArgs
-    from .storage import load_accounts
+    from .storage import load_accounts, resolve_active_account_index
 
     def _search_handler(args: dict, **kw: Any) -> str:
         query = str(args.get("query", ""))
@@ -38,30 +38,23 @@ def _register_search_tool(registry: Any) -> None:
             urls = None
 
         accounts_data = load_accounts()
-        active_idx_raw = accounts_data.get("activeIndex", 0)
         accounts = accounts_data.get("accounts", [])
-        if not accounts:
+        if not isinstance(accounts, list) or not accounts:
             return json.dumps({"error": "No Antigravity accounts configured"})
 
-        invalid_active_idx_msg = (
-            "Google Antigravity search unavailable: active account index is invalid. "
-            "Run `hermes antigravity accounts` to select an account."
-        )
-        if type(active_idx_raw) is int:
-            active_idx = active_idx_raw
-        else:
-            return invalid_active_idx_msg
-
-        if not isinstance(accounts, list) or not (0 <= active_idx < len(accounts)):
-            return invalid_active_idx_msg
-
+        active_idx = resolve_active_account_index(accounts_data, family="gemini")
         acc = accounts[active_idx]
         refresh_token = acc.get("refreshToken", "")
         if not refresh_token:
             return json.dumps({"error": "No refresh token for active account"})
 
-        from .token import refresh_access_token
-        refreshed = refresh_access_token({"refresh": refresh_token})
+        from .token import format_refresh_parts, refresh_access_token
+        packed_refresh = format_refresh_parts({
+            "refreshToken": refresh_token,
+            "projectId": acc.get("projectId") or "",
+            "managedProjectId": acc.get("managedProjectId") or "",
+        })
+        refreshed = refresh_access_token({"refresh": packed_refresh, "email": acc.get("email")})
         access_token = refreshed.get("access", "")
         if not access_token:
             return json.dumps({"error": "Failed to refresh access token"})

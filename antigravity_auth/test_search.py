@@ -305,7 +305,7 @@ class TestParseSearchResponse(unittest.TestCase):
 
 
 class TestSearchToolRegistration(unittest.TestCase):
-    def test_search_handler_rejects_stale_active_index(self):
+    def test_search_handler_falls_back_to_first_account_when_active_index_is_stale(self):
         from unittest.mock import patch
 
         from antigravity_auth.tools import _register_search_tool
@@ -325,13 +325,19 @@ class TestSearchToolRegistration(unittest.TestCase):
                 },
             ],
         }
-        with patch("antigravity_auth.storage.load_accounts", return_value=accounts_data):
+        with (
+            patch("antigravity_auth.storage.load_accounts", return_value=accounts_data),
+            patch("antigravity_auth.token.refresh_access_token", return_value={"access": "access"}) as refresh_mock,
+            patch("antigravity_auth.search.execute_search", return_value="searched") as search_mock,
+        ):
             _register_search_tool(registry)
             output = registry.kwargs["handler"]({"query": "hello"})
 
-        self.assertIn("active account index is invalid", output)
+        self.assertEqual(output, "searched")
+        refresh_mock.assert_called_once_with({"refresh": "refresh|proj", "email": "user@example.com"})
+        search_mock.assert_called_once()
 
-    def test_search_handler_rejects_malformed_active_index_without_refresh_or_search(self):
+    def test_search_handler_falls_back_to_first_account_when_active_index_is_malformed(self):
         from unittest.mock import patch
 
         from antigravity_auth.tools import _register_search_tool
@@ -361,9 +367,54 @@ class TestSearchToolRegistration(unittest.TestCase):
                     _register_search_tool(registry)
                     output = registry.kwargs["handler"]({"query": "hello"})
 
-                self.assertIn("active account index is invalid", output)
-                refresh_mock.assert_not_called()
-                search_mock.assert_not_called()
+                self.assertEqual(output, "searched")
+                refresh_mock.assert_called_once_with({"refresh": "refresh|proj", "email": "user@example.com"})
+                search_mock.assert_called_once()
+
+    def test_search_handler_uses_gemini_family_active_index(self):
+        from unittest.mock import patch
+
+        from antigravity_auth.tools import _register_search_tool
+
+        class FakeRegistry:
+            def register(self, **kwargs):
+                self.kwargs = kwargs
+
+        registry = FakeRegistry()
+        accounts_data = {
+            "activeIndex": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 1},
+            "accounts": [
+                {
+                    "email": "global@example.com",
+                    "refreshToken": "global-refresh",
+                    "projectId": "global-project",
+                },
+                {
+                    "email": "gemini@example.com",
+                    "refreshToken": "gemini-refresh",
+                    "projectId": "gemini-project",
+                    "managedProjectId": "gemini-managed",
+                },
+            ],
+        }
+        with (
+            patch("antigravity_auth.storage.load_accounts", return_value=accounts_data),
+            patch("antigravity_auth.token.refresh_access_token", return_value={"access": "gemini-access"}) as refresh_mock,
+            patch("antigravity_auth.search.execute_search", return_value="searched") as search_mock,
+        ):
+            _register_search_tool(registry)
+            output = registry.kwargs["handler"]({"query": "hello"})
+
+        self.assertEqual(output, "searched")
+        refresh_mock.assert_called_once_with({
+            "refresh": "gemini-refresh|gemini-project|gemini-managed",
+            "email": "gemini@example.com",
+        })
+        search_args, access_token, project_id = search_mock.call_args.args
+        self.assertEqual(search_args.query, "hello")
+        self.assertEqual(access_token, "gemini-access")
+        self.assertEqual(project_id, "gemini-project")
 
 
 if __name__ == "__main__":

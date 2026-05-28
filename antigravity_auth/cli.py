@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .auth_sync import sync_token_to_all_auth_stores, sync_token_to_google_oauth
 from .oauth import authorize_antigravity, exchange_antigravity
-from .storage import load_accounts, save_accounts
+from .storage import load_accounts, normalize_active_indices_after_explicit_switch, save_accounts
 from .token import format_refresh_parts, parse_refresh_parts
 
 
@@ -223,7 +223,8 @@ def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
         "projectId": resolved_project_id,
     })
 
-    accounts_data["activeIndex"] = len(accounts_data["accounts"]) - 1
+    new_account_index = len(accounts_data["accounts"]) - 1
+    normalize_active_indices_after_explicit_switch(accounts_data, new_account_index)
     save_accounts(accounts_data)
 
     sync_token_to_all_auth_stores(
@@ -477,7 +478,7 @@ def interactive_accounts_menu():
                     if idx_str.isdigit():
                         idx = int(idx_str)
                         if 0 <= idx < len(accounts):
-                            accounts_data["activeIndex"] = idx
+                            normalize_active_indices_after_explicit_switch(accounts_data, idx)
                             save_accounts(accounts_data)
                             
                             acc = accounts[idx]

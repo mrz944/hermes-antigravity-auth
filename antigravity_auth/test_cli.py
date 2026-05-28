@@ -61,6 +61,47 @@ class TestCli(unittest.TestCase):
         self.assertTrue(success)
         mock_exchange.assert_called_once_with("manual-code", "encoded-state")
 
+    def test_run_login_flow_sets_family_indices_and_cursor_to_new_account(self):
+        from .storage import load_accounts, save_accounts
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "existing@example.com",
+                "refreshToken": "existing-refresh",
+                "projectId": "existing-project",
+            }],
+            "activeIndex": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+            "cursor": 0,
+        })
+        auth_data = {
+            "url": "https://auth",
+            "verifier": "v",
+            "state": "encoded-state",
+        }
+        with patch.object(cli_module, "authorize_antigravity", return_value=auth_data), \
+             patch("builtins.input", return_value="manual-code"), \
+             patch.object(cli_module, "exchange_antigravity", return_value={
+                 "type": "success",
+                 "email": "new@example.com",
+                 "refresh": "new-refresh|new-project",
+                 "access": "new-access",
+                 "expires": 9999999999,
+                 "projectId": "new-project",
+             }), \
+             patch.object(cli_module, "sync_token_to_all_auth_stores"):
+            success = run_login_flow(project_id="new-project", no_browser=True)
+
+        self.assertTrue(success)
+        loaded = load_accounts()
+        self.assertEqual([acc["email"] for acc in loaded["accounts"]], [
+            "existing@example.com",
+            "new@example.com",
+        ])
+        self.assertEqual(loaded["activeIndex"], 1)
+        self.assertEqual(loaded["activeIndexByFamily"], {"claude": 1, "gemini": 1})
+        self.assertEqual(loaded["cursor"], 1)
+
     def test_delete_account(self):
         from .storage import load_accounts, save_accounts
         accounts_data = load_accounts()
@@ -297,6 +338,33 @@ class TestCli(unittest.TestCase):
         self.assertEqual(sync_calls[0]["email"], "user@example.com")
         self.assertEqual(sync_calls[0]["expires_ms"], 123)
         self.assertTrue(sync_calls[0]["set_active"])
+
+    def test_account_switch_sets_family_indices_and_cursor(self):
+        from .storage import load_accounts, save_accounts
+        save_accounts({
+            "version": 4,
+            "accounts": [
+                {"email": "old@example.com", "refreshToken": "old-refresh", "projectId": "old-project"},
+                {"email": "new@example.com", "refreshToken": "new-refresh", "projectId": "new-project"},
+            ],
+            "activeIndex": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+            "cursor": 0,
+        })
+
+        with patch("builtins.input", side_effect=["3", "1", "6"]), \
+             patch("antigravity_auth.token.refresh_access_token", return_value={
+                 "access": "new-access",
+                 "refresh": "new-refresh|new-project",
+                 "expires": 123,
+             }), \
+             patch("antigravity_auth.cli.sync_token_to_all_auth_stores"):
+            interactive_accounts_menu()
+
+        loaded = load_accounts()
+        self.assertEqual(loaded["activeIndex"], 1)
+        self.assertEqual(loaded["activeIndexByFamily"], {"claude": 1, "gemini": 1})
+        self.assertEqual(loaded["cursor"], 1)
 
 if __name__ == "__main__":
     unittest.main()

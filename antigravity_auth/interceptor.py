@@ -55,6 +55,64 @@ def _packed_refresh_for_account(account: Any) -> str:
   })
 
 
+def _sync_refreshed_token_to_all_auth_stores(
+    *,
+    refreshed: dict[str, Any],
+    packed_refresh: str,
+    project_id: str = "",
+    email: str | None = None,
+) -> dict[str, str | None] | None:
+  from .auth_sync import sync_token_to_all_auth_stores
+  from .token import parse_refresh_parts
+
+  rotated_refresh = refreshed.get("refresh")
+  sync_refresh = rotated_refresh or packed_refresh
+  parsed_refresh = parse_refresh_parts(rotated_refresh) if rotated_refresh else None
+  sync_project_id = (
+    (parsed_refresh.get("projectId") if parsed_refresh else None)
+    or project_id
+    or ""
+  )
+  sync_token_to_all_auth_stores(
+    access_token=refreshed["access"],
+    refresh_token=sync_refresh,
+    project_id=sync_project_id,
+    email=email,
+    expires_ms=refreshed.get("expires"),
+    set_active=True,
+  )
+  return parsed_refresh
+
+
+def _apply_parsed_refresh_to_account_dict(
+    account: dict[str, Any],
+    parsed_refresh: dict[str, str | None] | None,
+) -> None:
+  if not parsed_refresh:
+    return
+  refresh_token = parsed_refresh.get("refreshToken")
+  project_id = parsed_refresh.get("projectId")
+  managed_project_id = parsed_refresh.get("managedProjectId")
+  if refresh_token:
+    account["refreshToken"] = refresh_token
+  if project_id:
+    account["projectId"] = project_id
+  if managed_project_id:
+    account["managedProjectId"] = managed_project_id
+
+
+def _apply_parsed_refresh_to_managed_account(
+    account: Any,
+    parsed_refresh: dict[str, str | None] | None,
+) -> None:
+  if not parsed_refresh:
+    return
+  parts = account.refresh_parts
+  parts.refresh_token = parsed_refresh.get("refreshToken") or parts.refresh_token
+  parts.project_id = parsed_refresh.get("projectId") or parts.project_id
+  parts.managed_project_id = parsed_refresh.get("managedProjectId") or parts.managed_project_id
+
+
 def _select_request_account(model: str, header_style: str, config: Any) -> dict[str, Any] | None:
   try:
     from .accounts.shared import get_or_create_global_manager
@@ -116,7 +174,12 @@ def _select_request_account(model: str, header_style: str, config: Any) -> dict[
       )
     mgr.mark_account_used(account.index)
     mgr.save_to_disk()
-    return {"access": refreshed["access"], "account": account, "family": family}
+    return {
+      "access": refreshed["access"],
+      "account": account,
+      "account_index": account.index,
+      "family": family,
+    }
   except Exception as e:
     logger.warning("Request-time account selection failed: %s", e)
     return None
@@ -348,6 +411,9 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
         pass
 
     if selected and selected.get("access"):
+        selected_index = selected.get("account_index")
+        if type(selected_index) is int:
+            request.extensions["antigravity_selected_account_index"] = selected_index
         request.headers["Authorization"] = f"Bearer {selected['access']}"
 
     logger.debug("Antigravity headers injected for model=%s", model)
@@ -369,11 +435,20 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
     if response.status_code == 401 and config.proactive_token_refresh:
         try:
             from .token import format_refresh_parts, refresh_access_token
-            from .storage import load_accounts
-            from .auth_sync import sync_token_to_google_oauth
+            from .storage import (
+                is_valid_account_index,
+                load_accounts,
+                resolve_active_account_index,
+                save_accounts,
+            )
             d = load_accounts()
             accs = d.get("accounts", [])
-            idx = d.get("activeIndex", 0)
+            if not isinstance(accs, list) or not accs:
+                return
+            idx = resolve_active_account_index(d, family=family)
+            selected_idx = request_extensions.get("antigravity_selected_account_index")
+            if type(selected_idx) is int and is_valid_account_index(selected_idx, len(accs)):
+                idx = selected_idx
             if 0 <= idx < len(accs):
                 a = accs[idx]
                 raw_refresh = a.get("refreshToken", "")
@@ -386,12 +461,15 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                 })
                 r = refresh_access_token({"refresh": packed_refresh, "email": a.get("email")})
                 if r.get("access"):
-                    synced_refresh = r.get("refresh") or packed_refresh
-                    sync_token_to_google_oauth(
-                        access_token=r["access"], refresh_token=synced_refresh,
-                        project_id=a.get("projectId") or "", email=a.get("email"),
-                        expires_ms=r.get("expires"),
+                    parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
+                        refreshed=r,
+                        packed_refresh=packed_refresh,
+                        project_id=a.get("projectId") or "",
+                        email=a.get("email"),
                     )
+                    if parsed_refresh:
+                        _apply_parsed_refresh_to_account_dict(a, parsed_refresh)
+                        save_accounts(d)
         except Exception as e:
             logger.warning("Token refresh failed: %s", e)
 
@@ -423,7 +501,6 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     logger.warning("All %s accounts exhausted — cannot rotate after 403", family)
                 elif next_acc.index != active.index:
                     from .token import format_refresh_parts, refresh_access_token
-                    from .auth_sync import sync_token_to_google_oauth
                     packed_refresh = format_refresh_parts({
                         "refreshToken": next_acc.refresh_parts.refresh_token,
                         "projectId": next_acc.refresh_parts.project_id or "",
@@ -431,12 +508,14 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     })
                     r = refresh_access_token({"refresh": packed_refresh, "email": next_acc.email})
                     if r.get("access"):
-                        synced_refresh = r.get("refresh") or packed_refresh
-                        sync_token_to_google_oauth(
-                            access_token=r["access"], refresh_token=synced_refresh,
-                            project_id=next_acc.refresh_parts.project_id or "", email=next_acc.email,
-                            expires_ms=r.get("expires"),
+                        parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
+                            refreshed=r,
+                            packed_refresh=packed_refresh,
+                            project_id=next_acc.refresh_parts.project_id or "",
+                            email=next_acc.email,
                         )
+                        _apply_parsed_refresh_to_managed_account(next_acc, parsed_refresh)
+                        mgr.save_to_disk()
                         logger.info("Rotated to %s after 403 for %s", next_acc.email, family)
         except Exception as e:
             logger.warning("403 handler error: %s", e)
@@ -473,7 +552,6 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     logger.warning("All %s accounts exhausted — cannot rotate after rate limit", family)
                 elif next_acc.index != active.index:
                     from .token import format_refresh_parts, refresh_access_token
-                    from .auth_sync import sync_token_to_google_oauth
                     packed_refresh = format_refresh_parts({
                         "refreshToken": next_acc.refresh_parts.refresh_token,
                         "projectId": next_acc.refresh_parts.project_id or "",
@@ -481,12 +559,14 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     })
                     r = refresh_access_token({"refresh": packed_refresh, "email": next_acc.email})
                     if r.get("access"):
-                        synced_refresh = r.get("refresh") or packed_refresh
-                        sync_token_to_google_oauth(
-                            access_token=r["access"], refresh_token=synced_refresh,
-                            project_id=next_acc.refresh_parts.project_id or "", email=next_acc.email,
-                            expires_ms=r.get("expires"),
+                        parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
+                            refreshed=r,
+                            packed_refresh=packed_refresh,
+                            project_id=next_acc.refresh_parts.project_id or "",
+                            email=next_acc.email,
                         )
+                        _apply_parsed_refresh_to_managed_account(next_acc, parsed_refresh)
+                        mgr.save_to_disk()
                         logger.info("Rotated to %s after rate limit for %s", next_acc.email, family)
         except Exception as e:
             logger.warning("Rate limit handler error: %s", e)

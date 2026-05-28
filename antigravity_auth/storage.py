@@ -49,6 +49,71 @@ def get_accounts_json_path() -> Path:
     return get_hermes_home() / "antigravity-accounts.json"
 
 
+def is_valid_account_index(value: Any, account_count: int) -> bool:
+    """Return True when value is a non-bool int within the account list bounds."""
+    return type(value) is int and 0 <= value < account_count
+
+
+def resolve_active_account_index(
+    accounts_data: dict[str, Any],
+    family: str | None = None,
+    fallback: int = 0,
+) -> int:
+    """Resolve a safe active account index from storage.
+
+    Family-aware callers prefer activeIndexByFamily[family], then global
+    activeIndex, then a safe fallback. Family-agnostic callers preserve the
+    historical activeIndex preference, but can recover from stale/invalid
+    activeIndex by using the first valid family index before falling back to 0.
+    """
+    accounts = accounts_data.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        return 0
+
+    account_count = len(accounts)
+    family_map = accounts_data.get("activeIndexByFamily")
+    if family and isinstance(family_map, dict):
+        family_idx = family_map.get(family)
+        if type(family_idx) is int and 0 <= family_idx < account_count:
+            return family_idx
+
+    active_idx = accounts_data.get("activeIndex")
+    if type(active_idx) is int and 0 <= active_idx < account_count:
+        return active_idx
+
+    if not family and isinstance(family_map, dict):
+        for family_name in ("claude", "gemini"):
+            family_idx = family_map.get(family_name)
+            if type(family_idx) is int and 0 <= family_idx < account_count:
+                return family_idx
+
+    if type(fallback) is int and 0 <= fallback < account_count:
+        return fallback
+    return 0
+
+
+def normalize_active_indices_after_explicit_switch(
+    accounts_data: dict[str, Any],
+    account_index: int,
+) -> int:
+    """Set global/family active indexes and cursor after an explicit switch."""
+    accounts = accounts_data.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        resolved_index = 0
+    elif is_valid_account_index(account_index, len(accounts)):
+        resolved_index = account_index
+    else:
+        resolved_index = resolve_active_account_index(accounts_data, fallback=0)
+
+    accounts_data["activeIndex"] = resolved_index
+    accounts_data["activeIndexByFamily"] = {
+        "claude": resolved_index,
+        "gemini": resolved_index,
+    }
+    accounts_data["cursor"] = resolved_index
+    return resolved_index
+
+
 def load_accounts() -> dict[str, Any]:
     """
     Loads the antigravity-accounts.json storage.
@@ -59,6 +124,7 @@ def load_accounts() -> dict[str, Any]:
         "version": 4,
         "accounts": [],
         "activeIndex": 0,
+        "cursor": 0,
         "activeIndexByFamily": {
             "claude": 0,
             "gemini": 0
@@ -81,6 +147,8 @@ def load_accounts() -> dict[str, Any]:
                     data["accounts"] = []
                 if "activeIndex" not in data:
                     data["activeIndex"] = 0
+                if "cursor" not in data:
+                    data["cursor"] = data["activeIndex"]
                 if "activeIndexByFamily" not in data or not isinstance(data["activeIndexByFamily"], dict):
                     data["activeIndexByFamily"] = {
                         "claude": 0,
