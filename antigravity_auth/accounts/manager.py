@@ -9,6 +9,7 @@ from typing import Any
 
 from .._time_utils import now_ms
 from ..constants import ANTIGRAVITY_DEFAULT_PROJECT_ID
+from ..redaction import redact_secrets
 from ..storage import get_accounts_json_path
 from .ratelimit import (
     clear_expired_rate_limits,
@@ -40,8 +41,96 @@ def _clamp_non_negative_int(value: Any, fallback: int) -> int:
   return max(0, int(value))
 
 
+def _coerce_ms(value: Any) -> int | None:
+  if isinstance(value, bool) or not isinstance(value, (int, float)):
+    return None
+  return int(value)
+
+
+def _account_dict_matches_snapshot(current: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+  if current.get("refreshToken") and snapshot.get("refreshToken"):
+    if current.get("refreshToken") == snapshot.get("refreshToken"):
+      return True
+  if (current.get("email") or None) != (snapshot.get("email") or None):
+    return False
+  for key in ("projectId", "managedProjectId"):
+    current_value = current.get(key) or None
+    snapshot_value = snapshot.get(key) or None
+    if current_value is not None and snapshot_value is not None and current_value != snapshot_value:
+      return False
+  return True
+
+
+def _fingerprint_created_at(value: Any) -> int | None:
+  if not isinstance(value, dict):
+    return None
+  return _coerce_ms(value.get("createdAt"))
+
+
+def _merge_newer_current_account_fields(snapshot: dict[str, Any], current: dict[str, Any]) -> None:
+  """Preserve fresher per-account mutable state during manager snapshot saves."""
+  snapshot_last = _coerce_ms(snapshot.get("lastRefreshAt"))
+  current_last = _coerce_ms(current.get("lastRefreshAt"))
+  current_token_is_newer = current_last is not None and (
+    snapshot_last is None or current_last > snapshot_last
+  )
+  if current_token_is_newer:
+    for key in (
+      "refreshToken",
+      "projectId",
+      "managedProjectId",
+      "accessToken",
+      "accessTokenExpiresAt",
+      "expiresMs",
+      "lastRefreshAt",
+    ):
+      if key in current:
+        snapshot[key] = current[key]
+
+  current_fingerprint = current.get("fingerprint")
+  snapshot_fingerprint = snapshot.get("fingerprint")
+  if current_fingerprint is not None and current_fingerprint != snapshot_fingerprint:
+    current_created = _fingerprint_created_at(current_fingerprint)
+    snapshot_created = _fingerprint_created_at(snapshot_fingerprint)
+    if current_created is not None and snapshot_created is not None:
+      preserve_current = current_created >= snapshot_created
+    elif current_created is not None:
+      preserve_current = True
+    elif snapshot_created is not None:
+      preserve_current = False
+    else:
+      preserve_current = True
+    if preserve_current:
+      snapshot["fingerprint"] = current_fingerprint
+      if "fingerprintHistory" in current:
+        snapshot["fingerprintHistory"] = current["fingerprintHistory"]
+  elif "fingerprintHistory" not in snapshot and "fingerprintHistory" in current:
+    snapshot["fingerprintHistory"] = current["fingerprintHistory"]
+
+  current_rl = current.get("rateLimitResetTimes")
+  snapshot_rl = snapshot.get("rateLimitResetTimes")
+  if isinstance(current_rl, dict):
+    if not isinstance(snapshot_rl, dict):
+      snapshot["rateLimitResetTimes"] = current_rl
+    else:
+      for key, value in current_rl.items():
+        current_value = _coerce_ms(value)
+        snapshot_value = _coerce_ms(snapshot_rl.get(key))
+        if current_value is not None and (snapshot_value is None or current_value > snapshot_value):
+          snapshot_rl[key] = value
+
+  current_cooldown = _coerce_ms(current.get("coolingDownUntil"))
+  snapshot_cooldown = _coerce_ms(snapshot.get("coolingDownUntil"))
+  if current_cooldown is not None and (
+    snapshot_cooldown is None or current_cooldown > snapshot_cooldown
+  ):
+    snapshot["coolingDownUntil"] = current.get("coolingDownUntil")
+    if "cooldownReason" in current:
+      snapshot["cooldownReason"] = current.get("cooldownReason")
+
 
 class AccountManager:
+
   """In-memory multi-account manager with sticky account selection.
 
   Uses the same account until it hits a rate limit, then switches.
@@ -130,6 +219,9 @@ class AccountManager:
         email=acc_data.get("email"),
         added_at=_clamp_non_negative_int(acc_data.get("addedAt"), base_now),
         last_used=_clamp_non_negative_int(acc_data.get("lastUsed"), 0),
+        access=acc_data.get("accessToken") or acc_data.get("access"),
+        expires=acc_data.get("accessTokenExpiresAt") or acc_data.get("expiresMs") or acc_data.get("expires"),
+        last_refresh_at=acc_data.get("lastRefreshAt"),
         enabled=acc_data.get("enabled", True) is not False,
         rate_limit_reset_times=RateLimitState.from_dict(
           acc_data.get("rateLimitResetTimes")
@@ -190,10 +282,13 @@ class AccountManager:
           "project_id": a.refresh_parts.project_id,
           "managed_project_id": a.refresh_parts.managed_project_id,
         },
+        "access_token_cached": bool(a.access),
+        "access_token_expires_at": a.expires,
+        "last_refresh_at": a.last_refresh_at,
         "enabled": a.enabled,
         "last_used": a.last_used,
       }
-      result.append(d)
+      result.append(redact_secrets(d))
     return result
 
   def get_current_account_for_family(self, family: ModelFamily) -> ManagedAccount | None:
@@ -480,6 +575,13 @@ class AccountManager:
         "lastSwitchReason": a.last_switch_reason,
       }
 
+      if a.access:
+        acc_dict["accessToken"] = a.access
+      if a.expires is not None:
+        acc_dict["accessTokenExpiresAt"] = a.expires
+      if a.last_refresh_at is not None:
+        acc_dict["lastRefreshAt"] = a.last_refresh_at
+
       rl_dict = a.rate_limit_reset_times.to_dict()
       if rl_dict:
         acc_dict["rateLimitResetTimes"] = rl_dict
@@ -513,9 +615,27 @@ class AccountManager:
         "gemini": gemini_index,
       },
     }
-    from ..storage import save_accounts
+    from ..storage import update_accounts
     try:
-      save_accounts(storage_dict)
+      def merge_and_replace(current: dict[str, Any]) -> dict[str, Any]:
+        current_accounts = current.get("accounts", [])
+        if isinstance(current_accounts, list):
+          for snapshot_account in accounts_data:
+            if not isinstance(snapshot_account, dict):
+              continue
+            matched_current = next(
+              (
+                candidate for candidate in current_accounts
+                if isinstance(candidate, dict)
+                and _account_dict_matches_snapshot(candidate, snapshot_account)
+              ),
+              None,
+            )
+            if isinstance(matched_current, dict):
+              _merge_newer_current_account_fields(snapshot_account, matched_current)
+        return storage_dict
+
+      update_accounts(merge_and_replace)
       return True
     except Exception:
       return False

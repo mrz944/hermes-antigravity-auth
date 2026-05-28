@@ -111,6 +111,7 @@ class ManagedAccount:
   last_used: float = 0.0
   access: str | None = None
   expires: float | None = None
+  last_refresh_at: float | None = None
   enabled: bool = True
   rate_limit_reset_times: RateLimitState = field(default_factory=RateLimitState)
   last_switch_reason: str | None = None

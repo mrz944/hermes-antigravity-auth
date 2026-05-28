@@ -94,6 +94,84 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
         self.assertEqual(manager.get_account_count(), 1)
         self.assertEqual(manager.get_total_account_count(), 1)
 
+    def test_snapshot_redacts_refresh_and_access_tokens(self) -> None:
+        data = {
+            "version": 4,
+            "accounts": [{
+                "email": "secret@example.com",
+                "refreshToken": "raw-refresh-token",
+                "projectId": "proj-secret",
+                "managedProjectId": "managed-secret",
+                "accessToken": "raw-access-token",
+                "accessTokenExpiresAt": 123456,
+                "lastRefreshAt": 111,
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        manager = self._make_manager(data)
+        snapshot = manager.get_accounts_snapshot()
+        rendered = repr(snapshot)
+        self.assertNotIn("raw-refresh-token", rendered)
+        self.assertNotIn("raw-access-token", rendered)
+        self.assertEqual(snapshot[0]["refresh_parts"]["refresh_token"], "[REDACTED]")
+        self.assertTrue(snapshot[0]["access_token_cached"])
+        self.assertEqual(snapshot[0]["access_token_expires_at"], 123456)
+
+    def test_save_to_disk_preserves_newer_token_cache_from_disk(self) -> None:
+        data = {
+            "version": 4,
+            "accounts": [{
+                "email": "race@example.com",
+                "refreshToken": "old-refresh",
+                "projectId": "proj-race",
+                "accessToken": "old-access",
+                "accessTokenExpiresAt": 1000,
+                "lastRefreshAt": 100,
+                "fingerprint": {"deviceId": "old-device", "createdAt": 1},
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        manager = self._make_manager(data)
+        account = manager.get_account_by_index(0)
+        self.assertIsNotNone(account)
+        assert account is not None
+        account.access = "stale-access"
+        account.expires = 200
+        account.last_refresh_at = 100
+
+        self._write_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "race@example.com",
+                "refreshToken": "new-refresh",
+                "projectId": "proj-race",
+                "accessToken": "new-access",
+                "accessTokenExpiresAt": 9999,
+                "lastRefreshAt": 999,
+                "fingerprint": {"deviceId": "new-device", "createdAt": 999},
+                "rateLimitResetTimes": {"claude": 8888},
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            self.assertTrue(manager.save_to_disk())
+        with open(self.accounts_path, "r", encoding="utf-8") as f:
+            stored = json.load(f)["accounts"][0]
+        self.assertEqual(stored["refreshToken"], "new-refresh")
+        self.assertEqual(stored["accessToken"], "new-access")
+        self.assertEqual(stored["lastRefreshAt"], 999)
+        self.assertEqual(stored["fingerprint"], {"deviceId": "new-device", "createdAt": 999})
+        self.assertEqual(stored["rateLimitResetTimes"], {"claude": 8888})
+
     def test_reload_from_disk_mutates_existing_manager_and_cancels_pending_save(self) -> None:
         data = {
             "version": 4,

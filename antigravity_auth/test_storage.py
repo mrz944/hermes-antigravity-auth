@@ -11,6 +11,7 @@ from antigravity_auth.storage import (
     get_accounts_json_path,
     load_accounts,
     save_accounts,
+    update_accounts,
     sync_token_to_auth_json,
     get_active_token_from_auth_json,
 )
@@ -113,6 +114,40 @@ class TestStorage(unittest.TestCase):
             os.umask(old_umask)
 
         self.assertEqual(observed_modes, [0o600])
+
+    def test_update_accounts_prevents_lost_updates_across_threads(self):
+        import threading
+
+        save_accounts({"version": 4, "accounts": [], "activeIndex": 0, "cursor": 0})
+        start = threading.Barrier(12)
+
+        def worker(idx):
+            start.wait()
+
+            def mutator(data):
+                accounts = data.setdefault("accounts", [])
+                accounts.append({
+                    "email": f"user-{idx}@example.com",
+                    "refreshToken": f"refresh-{idx}",
+                    "projectId": f"project-{idx}",
+                })
+
+            update_accounts(mutator)
+
+        threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        loaded = load_accounts()
+        self.assertEqual(len(loaded["accounts"]), 12)
+        self.assertEqual(
+            {account["email"] for account in loaded["accounts"]},
+            {f"user-{idx}@example.com" for idx in range(12)},
+        )
+        self.assertEqual(loaded["activeIndex"], 0)
+        self.assertEqual(loaded["cursor"], 0)
 
     def test_sync_token_to_auth_json_new_and_existing(self):
         sync_token_to_auth_json(

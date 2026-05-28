@@ -382,6 +382,7 @@ class TestRequestHook(unittest.TestCase):
             "account_selection_strategy": "sticky",
             "pid_offset_enabled": False,
             "soft_quota_threshold_percent": 100,
+            "proactive_refresh_buffer_seconds": 1800,
         })()
         calls = []
 
@@ -391,6 +392,136 @@ class TestRequestHook(unittest.TestCase):
             _select_request_account("claude-sonnet-4-6", "antigravity", config)
 
         self.assertEqual(calls[0].get("persist"), True)
+
+    def test_request_account_uses_cached_access_token_without_refresh(self):
+        import time
+        from antigravity_auth.accounts.manager import AccountManager
+        from antigravity_auth.interceptor import _select_request_account
+        from antigravity_auth.storage import save_accounts
+
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "cached@example.com",
+                "refreshToken": "cached-refresh",
+                "projectId": "cached-project",
+                "accessToken": "cached-access",
+                "accessTokenExpiresAt": int(time.time() * 1000) + 3_600_000,
+                "lastRefreshAt": 111,
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        manager = AccountManager.load_from_disk()
+        config = type("Config", (), {
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "proactive_refresh_buffer_seconds": 60,
+        })()
+
+        with patch("antigravity_auth.accounts.shared.get_or_create_global_manager", return_value=manager), \
+             patch("antigravity_auth.token.refresh_access_token") as refresh:
+            selected = _select_request_account("claude-sonnet-4-6", "antigravity", config)
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["access"], "cached-access")
+        refresh.assert_not_called()
+
+    def test_request_account_refreshes_expired_cached_access_token(self):
+        import time
+        from antigravity_auth.accounts.manager import AccountManager
+        from antigravity_auth.interceptor import _select_request_account
+        from antigravity_auth.storage import load_accounts, save_accounts
+
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "expired@example.com",
+                "refreshToken": "expired-refresh",
+                "projectId": "expired-project",
+                "accessToken": "expired-access",
+                "accessTokenExpiresAt": int(time.time() * 1000) - 1,
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        manager = AccountManager.load_from_disk()
+        config = type("Config", (), {
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "proactive_refresh_buffer_seconds": 60,
+        })()
+
+        with patch("antigravity_auth.accounts.shared.get_or_create_global_manager", return_value=manager), \
+             patch("antigravity_auth.token.refresh_access_token", return_value={
+                 "access": "fresh-access",
+                 "refresh": "expired-refresh|expired-project",
+                 "expires": int(time.time() * 1000) + 3_600_000,
+             }) as refresh, \
+             patch("antigravity_auth.auth_sync.sync_token_to_all_auth_stores", return_value=True):
+            selected = _select_request_account("claude-sonnet-4-6", "antigravity", config)
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["access"], "fresh-access")
+        refresh.assert_called_once()
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["accessToken"], "fresh-access")
+        self.assertIn("lastRefreshAt", loaded["accounts"][0])
+
+    def test_persist_managed_state_does_not_overwrite_newer_rotated_token(self):
+        from antigravity_auth.accounts.manager import AccountManager
+        from antigravity_auth.interceptor import _persist_managed_account_state
+        from antigravity_auth.storage import load_accounts, save_accounts, update_accounts
+
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "race@example.com",
+                "refreshToken": "old-refresh",
+                "projectId": "proj",
+                "accessToken": "old-access",
+                "accessTokenExpiresAt": 1000,
+                "lastRefreshAt": 100,
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        manager = AccountManager.load_from_disk()
+        account = manager.get_account_by_index(0)
+        self.assertIsNotNone(account)
+        assert account is not None
+        account.access = "stale-access"
+        account.expires = 200
+        account.last_refresh_at = 100
+        account.last_used = 1234
+
+        def rotate_elsewhere(data):
+            data["accounts"][0].update({
+                "refreshToken": "new-refresh",
+                "accessToken": "new-access",
+                "accessTokenExpiresAt": 9999,
+                "lastRefreshAt": 999,
+            })
+
+        update_accounts(rotate_elsewhere)
+        self.assertTrue(_persist_managed_account_state(account, family="claude", set_family_active=True))
+
+        loaded = load_accounts()
+        stored = loaded["accounts"][0]
+        self.assertEqual(stored["refreshToken"], "new-refresh")
+        self.assertEqual(stored["accessToken"], "new-access")
+        self.assertEqual(stored["lastRefreshAt"], 999)
+        self.assertEqual(stored["lastUsed"], 1234)
+        self.assertEqual(account.refresh_parts.refresh_token, "new-refresh")
 
     def test_request_hook_uses_selected_account_fingerprint(self):
         from antigravity_auth.interceptor import _antigravity_request_hook
@@ -666,6 +797,80 @@ class TestRequestHook(unittest.TestCase):
         r.read()
         self.hook(r)
         self.assertEqual(r.headers.get("content-type", ""), "application/json")
+
+
+class TestRetryWrapper(unittest.TestCase):
+
+    def _make_request(self):
+        req = httpx.Request(
+            "POST",
+            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+            json={"model": "gemini-3.1-pro-high", "request": {"contents": []}},
+        )
+        req.read()
+        req.extensions["antigravity_selected_account_index"] = 0
+        return req
+
+    def test_send_wrapper_retries_replayable_401_once(self):
+        from antigravity_auth.interceptor import _send_with_antigravity_retry
+
+        calls = []
+
+        def original_send(request, *args, **kwargs):
+            calls.append(request)
+            status = 401 if len(calls) == 1 else 200
+            return httpx.Response(status, request=request)
+
+        req = self._make_request()
+        req.extensions["antigravity_retry_ready"] = True
+        response = _send_with_antigravity_retry(original_send, req)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[1].extensions["antigravity_retry_attempted"])
+        self.assertEqual(calls[1].extensions["antigravity_retry_original_status"], 401)
+
+    def test_send_wrapper_does_not_retry_without_successful_recovery_marker(self):
+        from antigravity_auth.interceptor import _send_with_antigravity_retry
+
+        calls = []
+
+        def original_send(request, *args, **kwargs):
+            calls.append(request)
+            return httpx.Response(401, request=request)
+
+        response = _send_with_antigravity_retry(original_send, self._make_request())
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(len(calls), 1)
+
+    def test_send_wrapper_retry_guard_prevents_infinite_loop(self):
+        from antigravity_auth.interceptor import _send_with_antigravity_retry
+
+        calls = []
+
+        def original_send(request, *args, **kwargs):
+            calls.append(request)
+            return httpx.Response(429, request=request)
+
+        req = self._make_request()
+        req.extensions["antigravity_retry_attempted"] = True
+        response = _send_with_antigravity_retry(original_send, req)
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(len(calls), 1)
+
+    def test_wrap_http_client_installs_hooks_once(self):
+        from antigravity_auth.interceptor import _antigravity_request_hook, _antigravity_response_hook, _wrap_http_client
+
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request)))
+        try:
+            _wrap_http_client(client)
+            _wrap_http_client(client)
+            self.assertEqual(client.event_hooks["request"].count(_antigravity_request_hook), 1)
+            self.assertEqual(client.event_hooks["response"].count(_antigravity_response_hook), 1)
+        finally:
+            client.close()
 
 
 class TestResponseHook(unittest.TestCase):
@@ -1270,6 +1475,7 @@ class TestResponseHook(unittest.TestCase):
 
         self.assertEqual(mgr.selected.cooldown_reason, "auth-failure")
         self.assertIsNone(mgr.current.cooldown_reason)
+        self.assertNotIn("antigravity_retry_ready", response.request.extensions)
 
     def test_401_syncs_rotated_refresh_token_to_all_auth_stores(self):
         from antigravity_auth.interceptor import _antigravity_response_hook
@@ -1318,6 +1524,8 @@ class TestResponseHook(unittest.TestCase):
         self.assertEqual(loaded["accounts"][0]["refreshToken"], "new-refresh")
         self.assertEqual(loaded["accounts"][0]["projectId"], "proj-2")
         self.assertEqual(loaded["accounts"][0]["managedProjectId"], "managed-2")
+        self.assertTrue(response.request.extensions["antigravity_retry_ready"])
+        self.assertEqual(response.request.extensions["antigravity_retry_action"], "refreshed-selected-account")
 
     def test_refreshed_token_sync_returns_none_when_auth_json_sync_fails(self):
         from antigravity_auth.auth_sync import AuthSyncResult
@@ -1426,6 +1634,8 @@ class TestResponseHook(unittest.TestCase):
         self.assertEqual(loaded["accounts"][1]["refreshToken"], "rotated-claude")
         self.assertEqual(loaded["accounts"][1]["projectId"], "proj-rotated")
         self.assertEqual(loaded["accounts"][1]["managedProjectId"], "managed-rotated")
+        self.assertTrue(response.request.extensions["antigravity_retry_ready"])
+        self.assertEqual(response.request.extensions["antigravity_retry_action"], "refreshed-selected-account")
 
     def test_403_rotation_syncs_next_account_to_all_auth_stores(self):
         from antigravity_auth.interceptor import _antigravity_response_hook
@@ -1493,6 +1703,8 @@ class TestResponseHook(unittest.TestCase):
             "expires_ms": 789,
             "set_active": True,
         }])
+        self.assertTrue(response.request.extensions["antigravity_retry_ready"])
+        self.assertEqual(response.request.extensions["antigravity_retry_action"], "rotated-after-403")
 
     def test_429_rotation_syncs_next_account_to_all_auth_stores(self):
         from antigravity_auth.interceptor import _antigravity_response_hook
@@ -1561,6 +1773,8 @@ class TestResponseHook(unittest.TestCase):
             "expires_ms": 987,
             "set_active": True,
         }])
+        self.assertTrue(response.request.extensions["antigravity_retry_ready"])
+        self.assertEqual(response.request.extensions["antigravity_retry_action"], "rotated-after-429")
 
     def test_token_watchdog_resolves_family_index_when_global_active_invalid(self):
         from antigravity_auth.storage import save_accounts

@@ -119,9 +119,13 @@ plugins:
 
 ```bash
 hermes antigravity login
+hermes antigravity doctor
 ```
 
-This opens a browser window for Google OAuth. The provider is automatically registered after authentication.
+`doctor` prints PASS/WARN/FAIL checks for the plugin entrypoint, Hermes Cloud
+Code interceptor symbols, account/auth store permissions, config parsing,
+model registry, and active-account token refresh. It redacts secrets in all
+output.
 
 ### 6. Use it
 
@@ -227,14 +231,19 @@ paths:
    enabled, `VALIDATED` tool mode, snake_case thinking config, and placeholder
    required fields for empty tool schemas.
 2. **httpx request hook**: For `cloudcode-pa` requests, the hook reads the model,
-   chooses `antigravity` or deprecated `gemini-cli` header style, selects and
-   refreshes the active account, syncs Hermes auth stores, and injects
-   Antigravity headers plus device fingerprint metadata. The request hook itself
-   does not rewrite the request body.
-3. **httpx response hook**: 401 responses can trigger token refresh. 403 and 429
-   responses mark the current account unavailable and rotate with model-family
-   and header-style awareness. 5xx responses mark the endpoint failed for the
-   internal endpoint helper.
+   chooses `antigravity` or deprecated `gemini-cli` header style, selects the
+   active account, reuses that account's cached access token until it is within
+   the proactive refresh buffer, and injects Antigravity headers plus device
+   fingerprint metadata. Token refresh and rotation are persisted per account;
+   the outbound Authorization header is always the selected account's token,
+   not whichever token happens to be active in `auth.json`. The request hook
+   itself does not rewrite the request body.
+3. **httpx response hook / send wrapper**: 401 responses refresh the selected
+   account and retry the request once when the body is replayable. 403 and 429
+   responses mark the selected account cooling down or rate-limited, then retry
+   once with the next valid account when safe. A retry guard prevents loops;
+   skipped retries are logged with a reason. 5xx responses mark the endpoint
+   failed for the internal endpoint helper.
 4. **Endpoint routing**: Current runtime requests use production
    `cloudcode-pa.googleapis.com`. An endpoint fallback helper exists in code, but
    `select_endpoint()` currently returns PROD and Hermes' Cloud Code runtime is
@@ -286,6 +295,13 @@ plugins:
       debug: false
       quiet_mode: false
 
+      # --- Token refresh / retry safety ---
+      proactive_token_refresh: true
+      proactive_refresh_buffer_seconds: 1800
+      proactive_refresh_check_interval_seconds: 300
+      default_retry_after_seconds: 60
+      max_backoff_seconds: 60
+
       # --- Rate Limit Scheduling ---
       scheduling_mode: cache_first       # cache_first | balance | performance_first
       max_cache_first_wait_seconds: 60   # seconds to wait for cache-first
@@ -300,6 +316,16 @@ plugins:
       account_selection_strategy: hybrid # sticky | hybrid | round-robin
       pid_offset_enabled: false          # vary starting account per process
 ```
+
+### Configuration Validation
+
+Invalid config values are warned about and clamped/fallen back to safe defaults.
+Supported strategy values are `sticky`, `hybrid`, and `round-robin`; supported
+scheduling modes are `cache_first`, `balance`, and `performance_first`.
+Percentage values are clamped to 0–100, retry/backoff intervals are clamped to
+sane positive bounds, and `soft_quota_cache_ttl_minutes` must be `auto` or a
+positive integer. If `~/.hermes/config.yaml` exists without PyYAML installed,
+`hermes antigravity doctor` reports a WARN with the install command.
 
 ### Basic Options
 
@@ -369,8 +395,10 @@ hermes antigravity login  # Run again to add more accounts
 
 **Account management:**
 ```bash
-hermes antigravity accounts    # List accounts and quotas
+hermes antigravity accounts    # Interactive account console
+hermes antigravity list        # List accounts
 hermes antigravity check       # Check quota status
+hermes antigravity doctor      # Diagnose install/config/auth state
 ```
 
 ---

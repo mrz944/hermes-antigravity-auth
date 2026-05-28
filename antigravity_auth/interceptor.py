@@ -136,7 +136,7 @@ def _sync_refreshed_token_to_all_auth_stores(
     return None
   if not getattr(sync_result, "google_oauth", bool(sync_result)):
     logger.warning("Native google_oauth sync failed; refreshed auth.json token is still active")
-  return parsed_refresh
+  return parsed_refresh or {}
 
 
 def _apply_parsed_refresh_to_account_dict(
@@ -168,12 +168,224 @@ def _apply_parsed_refresh_to_managed_account(
   parts.managed_project_id = parsed_refresh.get("managedProjectId") or parts.managed_project_id
 
 
+def _now_ms() -> int:
+  import time
+  return int(time.time() * 1000)
+
+
+def _coerce_expires_ms(value: Any) -> int | None:
+  if isinstance(value, bool) or not isinstance(value, (int, float)):
+    return None
+  return int(value)
+
+
+def _access_token_is_fresh(access_token: Any, expires_ms: Any, buffer_seconds: int) -> bool:
+  if not isinstance(access_token, str) or not access_token:
+    return False
+  expires = _coerce_expires_ms(expires_ms)
+  if expires is None:
+    return False
+  return expires > _now_ms() + max(0, int(buffer_seconds)) * 1000
+
+
+def _account_dict_matches_managed_account(
+    account_dict: dict[str, Any],
+    account: Any,
+    *,
+    allow_refresh_mismatch: bool = False,
+) -> bool:
+  actual = _account_identity_for_account_dict(account_dict)
+  expected = _account_identity_for_managed_account(account)
+  keys = ("email", "project_id", "managed_project_id") if allow_refresh_mismatch else (
+    "email", "refresh_token", "project_id", "managed_project_id"
+  )
+  for key in keys:
+    expected_value = expected.get(key) or None
+    actual_value = actual.get(key) or None
+    if allow_refresh_mismatch:
+      if expected_value is not None and actual_value is not None and expected_value != actual_value:
+        return False
+    elif expected_value != actual_value:
+      return False
+  return True
+
+
+def _sync_managed_account_from_dict(account: Any, account_dict: dict[str, Any]) -> None:
+  try:
+    parts = account.refresh_parts
+    parts.refresh_token = account_dict.get("refreshToken") or parts.refresh_token
+    parts.project_id = account_dict.get("projectId") or parts.project_id
+    parts.managed_project_id = account_dict.get("managedProjectId") or parts.managed_project_id
+  except Exception:
+    pass
+  try:
+    account.access = account_dict.get("accessToken") or account_dict.get("access") or getattr(account, "access", None)
+    account.expires = (
+      account_dict.get("accessTokenExpiresAt")
+      or account_dict.get("expiresMs")
+      or account_dict.get("expires")
+      or getattr(account, "expires", None)
+    )
+    account.last_refresh_at = account_dict.get("lastRefreshAt") or getattr(account, "last_refresh_at", None)
+  except Exception:
+    pass
+
+
+def _find_account_dict_for_managed_account(
+    accounts: list[Any],
+    account: Any,
+    *,
+    allow_refresh_mismatch: bool = False,
+) -> tuple[int, dict[str, Any]] | tuple[None, None]:
+  account_index = getattr(account, "index", None)
+  if type(account_index) is int and 0 <= account_index < len(accounts):
+    candidate = accounts[account_index]
+    if isinstance(candidate, dict) and _account_dict_matches_managed_account(
+      candidate, account, allow_refresh_mismatch=allow_refresh_mismatch
+    ):
+      return account_index, candidate
+  for idx, candidate in enumerate(accounts):
+    if isinstance(candidate, dict) and _account_dict_matches_managed_account(
+      candidate, account, allow_refresh_mismatch=allow_refresh_mismatch
+    ):
+      return idx, candidate
+  return None, None
+
+
+def _load_cached_token_for_account(account: Any, buffer_seconds: int) -> dict[str, Any] | None:
+  if _access_token_is_fresh(
+    getattr(account, "access", None), getattr(account, "expires", None), buffer_seconds
+  ):
+    return {
+      "access": getattr(account, "access"),
+      "expires": getattr(account, "expires", None),
+      "last_refresh_at": getattr(account, "last_refresh_at", None),
+    }
+
+  try:
+    from .storage import load_accounts
+    stored = load_accounts()
+    accounts = stored.get("accounts", [])
+    if not isinstance(accounts, list):
+      return None
+    _, stored_account = _find_account_dict_for_managed_account(
+      accounts, account, allow_refresh_mismatch=True
+    )
+    if not isinstance(stored_account, dict):
+      return None
+    access_token = stored_account.get("accessToken") or stored_account.get("access")
+    expires_ms = (
+      stored_account.get("accessTokenExpiresAt")
+      or stored_account.get("expiresMs")
+      or stored_account.get("expires")
+    )
+    if not _access_token_is_fresh(access_token, expires_ms, buffer_seconds):
+      return None
+    _sync_managed_account_from_dict(account, stored_account)
+    return {
+      "access": access_token,
+      "expires": expires_ms,
+      "last_refresh_at": stored_account.get("lastRefreshAt"),
+    }
+  except Exception as e:
+    logger.debug("Could not load cached Antigravity access token: %s", e)
+    return None
+
+
+def _persist_managed_account_state(
+    account: Any,
+    *,
+    family: str | None = None,
+    set_family_active: bool = False,
+) -> bool:
+  """Persist mutable fields for one account without rewriting the whole store."""
+  try:
+    from .storage import update_accounts
+  except Exception:
+    return False
+
+  persisted = {"ok": False}
+
+  def mutator(storage: dict[str, Any]) -> None:
+    accounts = storage.get("accounts", [])
+    if not isinstance(accounts, list):
+      return
+    idx, stored_account = _find_account_dict_for_managed_account(
+      accounts, account, allow_refresh_mismatch=True
+    )
+    if idx is None or not isinstance(stored_account, dict):
+      return
+    persisted["ok"] = True
+
+    token_fields_safe_to_update = True
+    try:
+      parts = account.refresh_parts
+      stored_refresh = stored_account.get("refreshToken")
+      account_refresh = parts.refresh_token
+      if stored_refresh and account_refresh and stored_refresh != account_refresh:
+        stored_last = _coerce_expires_ms(stored_account.get("lastRefreshAt"))
+        account_last = _coerce_expires_ms(getattr(account, "last_refresh_at", None))
+        token_fields_safe_to_update = account_last is not None and (
+          stored_last is None or account_last >= stored_last
+        )
+      if token_fields_safe_to_update:
+        stored_account["refreshToken"] = account_refresh
+        stored_account["projectId"] = parts.project_id
+        stored_account["managedProjectId"] = parts.managed_project_id
+      else:
+        _sync_managed_account_from_dict(account, stored_account)
+    except Exception:
+      pass
+
+    if token_fields_safe_to_update:
+      if getattr(account, "access", None):
+        stored_account["accessToken"] = getattr(account, "access")
+      if getattr(account, "expires", None) is not None:
+        stored_account["accessTokenExpiresAt"] = getattr(account, "expires")
+      if getattr(account, "last_refresh_at", None) is not None:
+        stored_account["lastRefreshAt"] = getattr(account, "last_refresh_at")
+    if getattr(account, "last_used", None) is not None:
+      stored_account["lastUsed"] = getattr(account, "last_used")
+    if getattr(account, "fingerprint", None):
+      stored_account["fingerprint"] = getattr(account, "fingerprint")
+    if getattr(account, "fingerprint_history", None):
+      stored_account["fingerprintHistory"] = getattr(account, "fingerprint_history")
+    try:
+      rl_dict = account.rate_limit_reset_times.to_dict()
+      if rl_dict:
+        stored_account["rateLimitResetTimes"] = rl_dict
+      else:
+        stored_account.pop("rateLimitResetTimes", None)
+    except Exception:
+      pass
+    cooldown_until = getattr(account, "cooling_down_until", None)
+    if cooldown_until is not None:
+      stored_account["coolingDownUntil"] = cooldown_until
+      stored_account["cooldownReason"] = getattr(account, "cooldown_reason", None)
+    else:
+      stored_account.pop("coolingDownUntil", None)
+      stored_account.pop("cooldownReason", None)
+
+    if set_family_active and family in ("claude", "gemini"):
+      family_map = storage.get("activeIndexByFamily")
+      if not isinstance(family_map, dict):
+        family_map = {"claude": 0, "gemini": 0}
+      family_map[family] = idx
+      storage["activeIndexByFamily"] = family_map
+
+  try:
+    update_accounts(mutator)
+    return bool(persisted["ok"])
+  except Exception as e:
+    logger.debug("Could not persist Antigravity account state transactionally: %s", e)
+    return False
+
+
 def _select_request_account(model: str, header_style: str, config: Any) -> dict[str, Any] | None:
   try:
     from .accounts.shared import get_or_create_global_manager
     from .accounts.quota import compute_soft_quota_cache_ttl_ms
     from .token import parse_refresh_parts, refresh_access_token
-    from .auth_sync import sync_token_to_all_auth_stores
 
     family = _model_family_for_model(model)
     soft_quota_cache_ttl_ms = compute_soft_quota_cache_ttl_ms(
@@ -193,54 +405,52 @@ def _select_request_account(model: str, header_style: str, config: Any) -> dict[
     if not account:
       return None
 
-    packed_refresh = _packed_refresh_for_account(account)
-    refreshed = refresh_access_token(
-      {"refresh": packed_refresh, "email": account.email},
-      persist=True,
-      set_active=True,
-    )
-    if not refreshed or not refreshed.get("access"):
-      return None
+    buffer_seconds = int(getattr(config, "proactive_refresh_buffer_seconds", 1800) or 0)
+    cached = _load_cached_token_for_account(account, buffer_seconds)
+    if cached:
+      access_token = cached["access"]
+      expires_ms = cached.get("expires")
+      logger.debug("Using cached Antigravity access token for account index=%s", account.index)
+    else:
+      packed_refresh = _packed_refresh_for_account(account)
+      refreshed = refresh_access_token(
+        {"refresh": packed_refresh, "email": account.email},
+        persist=True,
+        set_active=True,
+      )
+      if not refreshed or not refreshed.get("access"):
+        return None
 
-    rotated_refresh = refreshed.get("refresh")
-    sync_refresh = rotated_refresh or packed_refresh
-    parsed_refresh = parse_refresh_parts(rotated_refresh) if rotated_refresh else None
-    sync_project_id = (
-      (parsed_refresh.get("projectId") if parsed_refresh else None)
-      or account.refresh_parts.project_id
-      or ""
-    )
-    sync_result = sync_token_to_all_auth_stores(
-      access_token=refreshed["access"],
-      refresh_token=sync_refresh,
-      project_id=sync_project_id,
-      email=account.email,
-      expires_ms=refreshed.get("expires"),
-      set_active=True,
-    )
-    if not getattr(sync_result, "auth_json", bool(sync_result)):
-      return None
-    if not getattr(sync_result, "google_oauth", bool(sync_result)):
-      logger.warning("Native google_oauth sync failed; using selected access token for outbound request")
+      access_token = refreshed["access"]
+      expires_ms = refreshed.get("expires")
+      parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
+        refreshed=refreshed,
+        packed_refresh=packed_refresh,
+        project_id=account.refresh_parts.project_id or "",
+        email=account.email,
+      )
+      if parsed_refresh is None:
+        return None
+      if parsed_refresh:
+        _apply_parsed_refresh_to_managed_account(account, parsed_refresh)
+      account.access = access_token
+      account.expires = expires_ms
+      account.last_refresh_at = _now_ms()
 
-    if parsed_refresh:
-      account.refresh_parts.refresh_token = (
-        parsed_refresh.get("refreshToken") or account.refresh_parts.refresh_token
-      )
-      account.refresh_parts.project_id = (
-        parsed_refresh.get("projectId") or account.refresh_parts.project_id
-      )
-      account.refresh_parts.managed_project_id = (
-        parsed_refresh.get("managedProjectId") or account.refresh_parts.managed_project_id
-      )
     mgr.mark_account_used(account.index)
-    mgr.save_to_disk()
+    persisted = _persist_managed_account_state(account, family=family, set_family_active=True)
+    if not persisted:
+      try:
+        mgr.save_to_disk()
+      except Exception:
+        pass
     return {
-      "access": refreshed["access"],
+      "access": access_token,
       "account": account,
       "account_index": account.index,
       "account_identity": _account_identity_for_managed_account(account),
       "family": family,
+      "access_expires": expires_ms,
     }
   except Exception as e:
     logger.warning("Request-time account selection failed: %s", e)
@@ -481,13 +691,14 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
                 if cm:
                     request.headers["Client-Metadata"] = json.dumps(cm)
                 if fingerprint_changed:
-                    try:
-                        from .accounts.shared import get_global_manager
-                        mgr = get_global_manager()
-                        if mgr is not None:
-                            mgr.save_to_disk()
-                    except Exception:
-                        pass
+                    if not _persist_managed_account_state(account):
+                        try:
+                            from .accounts.shared import get_global_manager
+                            mgr = get_global_manager()
+                            if mgr:
+                                mgr.save_to_disk()
+                        except Exception:
+                            pass
         except Exception:
             pass
     else:
@@ -529,7 +740,7 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                 is_valid_account_index,
                 load_accounts,
                 resolve_active_account_index,
-                save_accounts,
+                update_accounts,
             )
             d = load_accounts()
             accs = d.get("accounts", [])
@@ -570,9 +781,39 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                         project_id=a.get("projectId") or "",
                         email=a.get("email"),
                     )
-                    if parsed_refresh:
-                        _apply_parsed_refresh_to_account_dict(a, parsed_refresh)
-                        save_accounts(d)
+                    if parsed_refresh is not None:
+                        def persist_refreshed_account(storage: dict[str, Any]) -> None:
+                            accounts = storage.get("accounts", [])
+                            if not isinstance(accounts, list):
+                                return
+                            target = None
+                            if selected_idx_present and is_valid_account_index(idx, len(accounts)):
+                                candidate = accounts[idx]
+                                if isinstance(candidate, dict) and _account_identity_matches(
+                                    _account_identity_for_account_dict(candidate),
+                                    selected_identity,
+                                ):
+                                    target = candidate
+                            if target is None:
+                                for candidate in accounts:
+                                    if (
+                                        isinstance(candidate, dict)
+                                        and candidate.get("refreshToken") == raw_refresh
+                                        and (candidate.get("email") or None) == (a.get("email") or None)
+                                    ):
+                                        target = candidate
+                                        break
+                            if not isinstance(target, dict):
+                                return
+                            _apply_parsed_refresh_to_account_dict(target, parsed_refresh)
+                            target["accessToken"] = r.get("access")
+                            if r.get("expires") is not None:
+                                target["accessTokenExpiresAt"] = r.get("expires")
+                            target["lastRefreshAt"] = _now_ms()
+
+                        update_accounts(persist_refreshed_account)
+                        response.request.extensions["antigravity_retry_ready"] = True
+                        response.request.extensions["antigravity_retry_action"] = "refreshed-selected-account"
         except Exception as e:
             logger.warning("Token refresh failed: %s", e)
 
@@ -586,7 +827,11 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                 import time
                 active.cooling_down_until = (time.time() + 86400) * 1000
                 active.cooldown_reason = "auth-failure"
-                mgr.save_to_disk()
+                if not _persist_managed_account_state(active, family=family):
+                    try:
+                        mgr.save_to_disk()
+                    except Exception:
+                        pass
                 soft_quota_cache_ttl_ms = compute_soft_quota_cache_ttl_ms(
                     config.soft_quota_cache_ttl_minutes,
                     config.quota_refresh_interval_minutes,
@@ -622,8 +867,17 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                             email=next_acc.email,
                         )
                         _apply_parsed_refresh_to_managed_account(next_acc, parsed_refresh)
-                        mgr.save_to_disk()
+                        next_acc.access = r.get("access")
+                        next_acc.expires = r.get("expires")
+                        next_acc.last_refresh_at = _now_ms()
+                        if not _persist_managed_account_state(next_acc, family=family, set_family_active=True):
+                            try:
+                                mgr.save_to_disk()
+                            except Exception:
+                                pass
                         logger.info("Rotated to %s after 403 for %s", next_acc.email, family)
+                        response.request.extensions["antigravity_retry_ready"] = True
+                        response.request.extensions["antigravity_retry_action"] = "rotated-after-403"
         except Exception as e:
             logger.warning("403 handler error: %s", e)
 
@@ -683,7 +937,11 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     )
                 else:
                     mark_rate_limited(active, retry_after_ms, family, header_style, model)
-                mgr.save_to_disk()
+                if not _persist_managed_account_state(active, family=family):
+                    try:
+                        mgr.save_to_disk()
+                    except Exception:
+                        pass
                 soft_quota_cache_ttl_ms = compute_soft_quota_cache_ttl_ms(
                     config.soft_quota_cache_ttl_minutes,
                     config.quota_refresh_interval_minutes,
@@ -719,8 +977,17 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                             email=next_acc.email,
                         )
                         _apply_parsed_refresh_to_managed_account(next_acc, parsed_refresh)
-                        mgr.save_to_disk()
+                        next_acc.access = r.get("access")
+                        next_acc.expires = r.get("expires")
+                        next_acc.last_refresh_at = _now_ms()
+                        if not _persist_managed_account_state(next_acc, family=family, set_family_active=True):
+                            try:
+                                mgr.save_to_disk()
+                            except Exception:
+                                pass
                         logger.info("Rotated to %s after rate limit for %s", next_acc.email, family)
+                        response.request.extensions["antigravity_retry_ready"] = True
+                        response.request.extensions["antigravity_retry_action"] = "rotated-after-429"
         except Exception as e:
             logger.warning("Rate limit handler error: %s", e)
 
@@ -734,13 +1001,99 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
             pass
 
 
+def _is_cloudcode_request(request: httpx.Request) -> bool:
+    return "cloudcode-pa" in str(request.url)
+
+
+def _request_body_is_replayable(request: httpx.Request) -> bool:
+    if request.method.upper() not in ("POST", "PUT", "PATCH"):
+        return True
+    try:
+        request.read()
+        _ = request.content
+        return True
+    except Exception:
+        return False
+
+
+def _clone_request_for_retry(request: httpx.Request) -> httpx.Request | None:
+    try:
+        request.read()
+        content = request.content
+    except Exception:
+        return None
+    retry_extensions = dict(request.extensions)
+    retry_extensions["antigravity_retry_attempted"] = True
+    retry_extensions["antigravity_retry_original_status"] = retry_extensions.get(
+        "antigravity_retry_original_status"
+    )
+    return httpx.Request(
+        request.method,
+        request.url,
+        headers=request.headers.copy(),
+        content=content,
+        extensions=retry_extensions,
+    )
+
+
+def _response_is_retryable(response: httpx.Response) -> bool:
+    request = response.request
+    if response.status_code not in (401, 403, 429):
+        return False
+    if not _is_cloudcode_request(request):
+        return False
+    if request.extensions.get("antigravity_retry_attempted"):
+        return False
+    if request.extensions.get("antigravity_account_selection_failed"):
+        return False
+    if not request.extensions.get("antigravity_retry_ready"):
+        return False
+    return True
+
+
+def _send_with_antigravity_retry(original_send, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+    response = original_send(request, *args, **kwargs)
+    if not _response_is_retryable(response):
+        return response
+    if kwargs.get("stream"):
+        response.request.extensions["antigravity_retry_skipped_reason"] = "streaming response"
+        logger.warning("Antigravity request got HTTP %s; automatic retry skipped for streaming response", response.status_code)
+        return response
+    if not _request_body_is_replayable(response.request):
+        response.request.extensions["antigravity_retry_skipped_reason"] = "request body is not replayable"
+        logger.warning("Antigravity request got HTTP %s; automatic retry skipped because body is not replayable", response.status_code)
+        return response
+    retry_request = _clone_request_for_retry(response.request)
+    if retry_request is None:
+        response.request.extensions["antigravity_retry_skipped_reason"] = "request clone failed"
+        logger.warning("Antigravity request got HTTP %s; automatic retry skipped because request clone failed", response.status_code)
+        return response
+    retry_request.extensions["antigravity_retry_original_status"] = response.status_code
+    try:
+        response.close()
+    except Exception:
+        pass
+    logger.info("Retrying Antigravity request once after HTTP %s", response.status_code)
+    return original_send(retry_request, *args, **kwargs)
+
+
 def _wrap_http_client(http_client: httpx.Client) -> httpx.Client:
     if not http_client.event_hooks.get("request"):
         http_client.event_hooks["request"] = []
     if not http_client.event_hooks.get("response"):
         http_client.event_hooks["response"] = []
-    http_client.event_hooks["request"].append(_antigravity_request_hook)
-    http_client.event_hooks["response"].append(_antigravity_response_hook)
+    if _antigravity_request_hook not in http_client.event_hooks["request"]:
+        http_client.event_hooks["request"].append(_antigravity_request_hook)
+    if _antigravity_response_hook not in http_client.event_hooks["response"]:
+        http_client.event_hooks["response"].append(_antigravity_response_hook)
+    if not getattr(http_client, "_antigravity_retry_send_wrapped", False):
+        original_send = http_client.send
+
+        def send_with_retry(request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+            return _send_with_antigravity_retry(original_send, request, *args, **kwargs)
+
+        http_client.send = send_with_retry  # type: ignore[method-assign]
+        setattr(http_client, "_antigravity_retry_send_wrapped", True)
     return http_client
 
 

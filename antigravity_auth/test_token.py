@@ -184,6 +184,52 @@ class TestToken(unittest.TestCase):
         self.assertEqual(active["refresh_token"], "new_rotated_refresh_token_xyz|proj_abc")
 
     @patch("urllib.request.urlopen")
+    def test_stale_concurrent_refresh_does_not_overwrite_rotated_refresh(self, mock_urlopen):
+        response = MagicMock()
+        response.status = 200
+        response.headers = {}
+        response.read.return_value = json.dumps({
+            "access_token": "stale_access",
+            "expires_in": 3600,
+            "refresh_token": "stale_rotated_refresh",
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = response
+
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "race@example.com",
+                "refreshToken": "already_rotated_refresh",
+                "projectId": "proj_race",
+                "accessToken": "newer_access",
+            }],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        sync_token_to_auth_json(
+            "newer_access",
+            "already_rotated_refresh|proj_race",
+            "proj_race",
+            "race@example.com",
+        )
+
+        updated_auth = refresh_access_token({
+            "refresh": "old_refresh|proj_race",
+            "access": "old_access",
+            "expires": 0,
+            "email": "race@example.com",
+        }, persist=True, set_active=True)
+
+        self.assertEqual(updated_auth["refresh"], "stale_rotated_refresh|proj_race")
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "already_rotated_refresh")
+        self.assertEqual(loaded["accounts"][0]["accessToken"], "newer_access")
+        active = get_active_token_from_auth_json()
+        self.assertEqual(active["refresh_token"], "already_rotated_refresh|proj_race")
+        self.assertEqual(active["access_token"], "newer_access")
+
+    @patch("urllib.request.urlopen")
     def test_refresh_access_token_rotation_without_persist_does_not_mutate_accounts(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.status = 200
@@ -214,13 +260,13 @@ class TestToken(unittest.TestCase):
         }
 
         with patch("antigravity_auth.token.load_accounts") as mock_load_accounts, \
-             patch("antigravity_auth.token.save_accounts") as mock_save_accounts:
+             patch("antigravity_auth.token.update_accounts") as mock_update_accounts:
             updated_auth = refresh_access_token(auth)
 
         self.assertEqual(updated_auth["access"], "new_access_token_abc")
         self.assertEqual(updated_auth["refresh"], "new_rotated_refresh_token_xyz|proj_abc")
         mock_load_accounts.assert_not_called()
-        mock_save_accounts.assert_not_called()
+        mock_update_accounts.assert_not_called()
 
         loaded = load_accounts()
         self.assertEqual(loaded["accounts"][0]["refreshToken"], "old_refresh_123")

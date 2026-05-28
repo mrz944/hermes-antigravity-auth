@@ -32,7 +32,7 @@ from typing import cast
 
 from .auth_sync import sync_token_to_all_auth_stores, sync_token_to_google_oauth
 from .oauth import authorize_antigravity, exchange_antigravity
-from .storage import load_accounts, normalize_active_indices_after_explicit_switch, save_accounts
+from .storage import load_accounts, normalize_active_indices_after_explicit_switch, update_accounts
 from .token import format_refresh_parts, parse_refresh_parts
 
 
@@ -49,6 +49,34 @@ def _print_runtime_auth_sync_warnings(sync_result, context: str) -> None:
         print(f"WARNING: Could not sync {context} to Hermes auth.json; runtime authorization may remain unchanged.")
     elif not _auth_sync_google_oauth_ok(sync_result):
         print("WARNING: Native google_oauth sync failed; auth.json credentials are active.")
+
+
+def _account_matches_identity(account: dict, identity: dict) -> bool:
+    if not isinstance(account, dict):
+        return False
+    if (account.get("email") or None) != (identity.get("email") or None):
+        return False
+    account_refresh = account.get("refreshToken") or None
+    identity_refresh = identity.get("refreshToken") or None
+    if account_refresh and identity_refresh and account_refresh == identity_refresh:
+        return True
+    for key in ("projectId", "managedProjectId"):
+        account_value = account.get(key) or None
+        identity_value = identity.get(key) or None
+        if account_value is not None and identity_value is not None and account_value != identity_value:
+            return False
+    return True
+
+
+def _find_account_by_identity(accounts: list, identity: dict, preferred_index: int | None = None) -> dict | None:
+    if preferred_index is not None and 0 <= preferred_index < len(accounts):
+        candidate = accounts[preferred_index]
+        if isinstance(candidate, dict) and _account_matches_identity(candidate, identity):
+            return candidate
+    for candidate in accounts:
+        if isinstance(candidate, dict) and _account_matches_identity(candidate, identity):
+            return candidate
+    return None
 
 
 class ThreadSafeHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -305,22 +333,29 @@ def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
 
     refresh_token = parse_refresh_parts(refresh)["refreshToken"]
 
-    accounts_data = load_accounts()
-    
-    accounts_data["accounts"] = [
-        acc for acc in accounts_data.get("accounts", [])
-        if acc.get("email") != email
-    ]
+    new_account_index_holder = {"index": 0}
 
-    accounts_data["accounts"].append({
-        "email": email,
-        "refreshToken": refresh_token,
-        "projectId": resolved_project_id,
-    })
+    def upsert_account(accounts_data: dict) -> None:
+        accounts = [
+            acc for acc in accounts_data.get("accounts", [])
+            if isinstance(acc, dict) and acc.get("email") != email
+        ]
+        account_record = {
+            "email": email,
+            "refreshToken": refresh_token,
+            "projectId": resolved_project_id,
+        }
+        if result.get("access"):
+            account_record["accessToken"] = result.get("access")
+        if result.get("expires") is not None:
+            account_record["accessTokenExpiresAt"] = result.get("expires")
+        account_record["lastRefreshAt"] = int(time.time() * 1000)
+        accounts.append(account_record)
+        accounts_data["accounts"] = accounts
+        new_account_index_holder["index"] = len(accounts) - 1
+        normalize_active_indices_after_explicit_switch(accounts_data, new_account_index_holder["index"])
 
-    new_account_index = len(accounts_data["accounts"]) - 1
-    normalize_active_indices_after_explicit_switch(accounts_data, new_account_index)
-    save_accounts(accounts_data)
+    update_accounts(upsert_account)
 
     sync_result = sync_token_to_all_auth_stores(
         access_token=result.get("access", ""),
@@ -368,69 +403,98 @@ def list_accounts():
 
 
 def delete_account(email_or_index: str) -> bool:
-    accounts_data = load_accounts()
-    accounts = accounts_data.get("accounts", [])
-    if not accounts:
-        print("No accounts to delete.")
-        return False
+    removed_holder: dict[str, object] = {"removed": None, "found": False}
 
-    target_idx = None
-    if email_or_index.isdigit():
-        idx = int(email_or_index)
-        if 0 <= idx < len(accounts):
-            target_idx = idx
-    else:
-        for idx, acc in enumerate(accounts):
-            if acc.get("email") == email_or_index:
+    def remove_account(accounts_data: dict) -> None:
+        accounts = accounts_data.get("accounts", [])
+        if not isinstance(accounts, list) or not accounts:
+            return
+
+        target_idx = None
+        if email_or_index.isdigit():
+            idx = int(email_or_index)
+            if 0 <= idx < len(accounts):
                 target_idx = idx
-                break
+        else:
+            for idx, acc in enumerate(accounts):
+                if isinstance(acc, dict) and acc.get("email") == email_or_index:
+                    target_idx = idx
+                    break
 
-    if target_idx is None:
-        print(f"Account '{email_or_index}' not found.")
+        if target_idx is None:
+            return
+
+        removed_holder["found"] = True
+        removed = accounts.pop(target_idx)
+        removed_holder["removed"] = removed
+        accounts_data["accounts"] = accounts
+
+        active_idx = accounts_data.get("activeIndex", 0)
+        if not isinstance(active_idx, int) or isinstance(active_idx, bool):
+            active_idx = 0
+        if not accounts:
+            accounts_data["activeIndex"] = 0
+        else:
+            if active_idx > target_idx:
+                active_idx -= 1
+            elif active_idx == target_idx:
+                active_idx = min(target_idx, len(accounts) - 1)
+            accounts_data["activeIndex"] = max(0, min(active_idx, len(accounts) - 1))
+
+        family_map = accounts_data.get("activeIndexByFamily")
+        if not isinstance(family_map, dict):
+            family_map = {}
+        if not accounts:
+            accounts_data["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+        else:
+            new_active_idx = accounts_data["activeIndex"]
+            adjusted_family_map = {}
+            for family in ("claude", "gemini"):
+                family_idx = family_map.get(family)
+                if not isinstance(family_idx, int) or isinstance(family_idx, bool):
+                    family_idx = new_active_idx
+                elif family_idx > target_idx:
+                    family_idx -= 1
+                elif family_idx == target_idx:
+                    family_idx = new_active_idx
+                adjusted_family_map[family] = max(0, min(family_idx, len(accounts) - 1))
+            accounts_data["activeIndexByFamily"] = adjusted_family_map
+
+        cursor = accounts_data.get("cursor", accounts_data.get("activeIndex", 0))
+        if not isinstance(cursor, int) or isinstance(cursor, bool):
+            cursor = accounts_data.get("activeIndex", 0)
+        if not accounts:
+            accounts_data["cursor"] = 0
+        else:
+            if cursor > target_idx:
+                cursor -= 1
+            accounts_data["cursor"] = cursor % len(accounts)
+
+    final_data = update_accounts(remove_account)
+    accounts = final_data.get("accounts", [])
+
+    if not removed_holder["found"]:
+        if not accounts:
+            print("No accounts to delete.")
+        else:
+            print(f"Account '{email_or_index}' not found.")
         return False
 
-    removed = accounts.pop(target_idx)
-
-    active_idx = accounts_data.get("activeIndex", 0)
-    if not isinstance(active_idx, int) or isinstance(active_idx, bool):
-        active_idx = 0
-    if not accounts:
-        accounts_data["activeIndex"] = 0
-    else:
-        if active_idx > target_idx:
-            active_idx -= 1
-        elif active_idx == target_idx:
-            active_idx = min(target_idx, len(accounts) - 1)
-        accounts_data["activeIndex"] = max(0, min(active_idx, len(accounts) - 1))
-
-    family_map = accounts_data.get("activeIndexByFamily")
-    if not isinstance(family_map, dict):
-        family_map = {}
-    if not accounts:
-        accounts_data["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
-    else:
-        new_active_idx = accounts_data["activeIndex"]
-        adjusted_family_map = {}
-        for family in ("claude", "gemini"):
-            family_idx = family_map.get(family)
-            if not isinstance(family_idx, int) or isinstance(family_idx, bool):
-                family_idx = new_active_idx
-            elif family_idx > target_idx:
-                family_idx -= 1
-            elif family_idx == target_idx:
-                family_idx = new_active_idx
-            adjusted_family_map[family] = max(0, min(family_idx, len(accounts) - 1))
-        accounts_data["activeIndexByFamily"] = adjusted_family_map
-
-    save_accounts(accounts_data)
+    removed = removed_holder["removed"] if isinstance(removed_holder["removed"], dict) else {}
     print(f"Removed account: {removed.get('email')}")
-    
+
     if accounts:
-        active_idx = accounts_data.get("activeIndex", 0)
+        active_idx = final_data.get("activeIndex", 0)
         if not isinstance(active_idx, int) or isinstance(active_idx, bool):
             active_idx = 0
         active_idx = max(0, min(active_idx, len(accounts) - 1))
         active = accounts[active_idx]
+        active_identity = {
+            "email": active.get("email"),
+            "refreshToken": active.get("refreshToken"),
+            "projectId": active.get("projectId"),
+            "managedProjectId": active.get("managedProjectId"),
+        }
         packed_refresh = format_refresh_parts({
             "refreshToken": active.get("refreshToken", ""),
             "projectId": active.get("projectId") or "",
@@ -449,6 +513,35 @@ def delete_account(email_or_index: str) -> bool:
             access_token = refreshed.get("access") or ""
             expires_ms = refreshed.get("expires")
             sync_refresh = refreshed.get("refresh") or packed_refresh
+        except Exception:
+            pass
+
+        try:
+            from .token import parse_refresh_parts
+            parsed = parse_refresh_parts(sync_refresh)
+
+            def persist_active_refresh(storage: dict) -> None:
+                stored_accounts = storage.get("accounts", [])
+                if not isinstance(stored_accounts, list) or not stored_accounts:
+                    return
+                idx = max(0, min(active_idx, len(stored_accounts) - 1))
+                target = _find_account_by_identity(stored_accounts, active_identity, idx)
+                if not isinstance(target, dict):
+                    return
+                if parsed.get("refreshToken"):
+                    target["refreshToken"] = parsed.get("refreshToken")
+                if parsed.get("projectId"):
+                    target["projectId"] = parsed.get("projectId")
+                if parsed.get("managedProjectId"):
+                    target["managedProjectId"] = parsed.get("managedProjectId")
+                if access_token:
+                    target["accessToken"] = access_token
+                if expires_ms is not None:
+                    target["accessTokenExpiresAt"] = expires_ms
+                if access_token or expires_ms is not None:
+                    target["lastRefreshAt"] = int(time.time() * 1000)
+
+            update_accounts(persist_active_refresh)
         except Exception:
             pass
 
@@ -584,10 +677,24 @@ def interactive_accounts_menu():
                     if idx_str.isdigit():
                         idx = int(idx_str)
                         if 0 <= idx < len(accounts):
-                            normalize_active_indices_after_explicit_switch(accounts_data, idx)
-                            save_accounts(accounts_data)
-                            
-                            acc = accounts[idx]
+                            switched_holder = {"account": None}
+
+                            def switch_active(storage: dict) -> None:
+                                stored_accounts = storage.get("accounts", [])
+                                if not isinstance(stored_accounts, list) or not (0 <= idx < len(stored_accounts)):
+                                    return
+                                normalize_active_indices_after_explicit_switch(storage, idx)
+                                switched_holder["account"] = stored_accounts[idx]
+
+                            updated_accounts_data = update_accounts(switch_active)
+                            accounts = updated_accounts_data.get("accounts", accounts)
+                            acc = switched_holder["account"] if isinstance(switched_holder["account"], dict) else accounts[idx]
+                            switch_identity = {
+                                "email": acc.get("email"),
+                                "refreshToken": acc.get("refreshToken"),
+                                "projectId": acc.get("projectId"),
+                                "managedProjectId": acc.get("managedProjectId"),
+                            }
                             packed_refresh = format_refresh_parts({
                                 "refreshToken": acc.get("refreshToken", ""),
                                 "projectId": acc.get("projectId") or "",
@@ -601,6 +708,31 @@ def interactive_accounts_menu():
                                 access_token = refreshed.get("access", "")
                                 packed_refresh = refreshed.get("refresh") or packed_refresh
                                 expires_ms = refreshed.get("expires")
+                                try:
+                                    parsed = parse_refresh_parts(packed_refresh)
+
+                                    def persist_switched_token(storage: dict) -> None:
+                                        stored_accounts = storage.get("accounts", [])
+                                        if not isinstance(stored_accounts, list) or not stored_accounts:
+                                            return
+                                        target = _find_account_by_identity(stored_accounts, switch_identity, idx)
+                                        if not isinstance(target, dict):
+                                            return
+                                        if parsed.get("refreshToken"):
+                                            target["refreshToken"] = parsed.get("refreshToken")
+                                        if parsed.get("projectId"):
+                                            target["projectId"] = parsed.get("projectId")
+                                        if parsed.get("managedProjectId"):
+                                            target["managedProjectId"] = parsed.get("managedProjectId")
+                                        if access_token:
+                                            target["accessToken"] = access_token
+                                        if expires_ms is not None:
+                                            target["accessTokenExpiresAt"] = expires_ms
+                                        target["lastRefreshAt"] = int(time.time() * 1000)
+
+                                    update_accounts(persist_switched_token)
+                                except Exception:
+                                    pass
                             except Exception:
                                 access_token = ""  # fallback to empty if refresh fails
                             sync_result = sync_token_to_all_auth_stores(
@@ -649,6 +781,7 @@ def setup_cli(parser):
 
     subparsers.add_parser("quota", help="Verify accounts and show quota status")
     subparsers.add_parser("check", help="Verify accounts and show quota status")
+    subparsers.add_parser("doctor", help="Run Antigravity installation and auth diagnostics")
     
     delete_parser = subparsers.add_parser("delete", help="Delete a saved account")
     delete_parser.add_argument("email_or_index", help="Email address or account index to remove")
@@ -666,6 +799,9 @@ def handle_cli(args):
             delete_account(args.email_or_index)
         elif args.action in ("quota", "check"):
             check_quotas_and_verify()
+        elif args.action == "doctor":
+            from .doctor import print_doctor
+            print_doctor()
         else:
             interactive_accounts_menu()
     except KeyboardInterrupt:

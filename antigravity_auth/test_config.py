@@ -11,6 +11,7 @@ from antigravity_auth.config import (
     load_config_from_yaml,
     apply_env_overrides,
     get_config,
+    validate_config,
 )
 
 
@@ -245,6 +246,27 @@ plugins:
         assert config is not None
         self.assertTrue(config.debug)
 
+    def test_invalid_config_values_warn_and_fall_back_or_clamp(self):
+        with self.assertLogs("antigravity_auth.config", level="WARNING"):
+            config = load_config_from_dict({
+                "account_selection_strategy": "bad-strategy",
+                "scheduling_mode": "fastest",
+                "soft_quota_threshold_percent": 150,
+                "default_retry_after_seconds": -3,
+                "soft_quota_cache_ttl_minutes": "bogus",
+                "cli_first": "not-a-bool",
+            })
+        self.assertEqual(config.account_selection_strategy, DEFAULT_CONFIG.account_selection_strategy)
+        self.assertEqual(config.scheduling_mode, DEFAULT_CONFIG.scheduling_mode)
+        self.assertEqual(config.soft_quota_threshold_percent, 100)
+        self.assertEqual(config.default_retry_after_seconds, 1)
+        self.assertEqual(config.soft_quota_cache_ttl_minutes, DEFAULT_CONFIG.soft_quota_cache_ttl_minutes)
+        self.assertEqual(config.cli_first, DEFAULT_CONFIG.cli_first)
+
+    def test_validate_config_accepts_positive_soft_quota_cache_ttl_string(self):
+        config = validate_config(Config(soft_quota_cache_ttl_minutes="45"))
+        self.assertEqual(config.soft_quota_cache_ttl_minutes, 45)
+
     def test_existing_yaml_without_pyyaml_warns(self):
         import tempfile
         from pathlib import Path
@@ -337,6 +359,12 @@ class TestApplyEnvOverrides(unittest.TestCase):
         self.assertTrue(config.debug)
         self.assertTrue(config.quiet_mode)
         self.assertEqual(config.scheduling_mode, "balance")
+
+    def test_invalid_env_bool_warns_and_keeps_default(self):
+        os.environ["HERMES_ANTIGRAVITY_CLI_FIRST"] = "maybe"
+        with self.assertLogs("antigravity_auth.config", level="WARNING"):
+            config = apply_env_overrides(Config(cli_first=False))
+        self.assertFalse(config.cli_first)
 
 
 if __name__ == "__main__":

@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from antigravity_auth.redaction import redact_secret_text, redact_secrets
 from antigravity_auth.storage import get_hermes_home
 
 DEBUG = 10
@@ -54,9 +54,9 @@ class Logger:
 
   def _log(self, level: str, message: str, extra: dict | None = None) -> None:
     service = self._service
-    line = f"[{service}] {level}: {message}"
+    line = f"[{service}] {level}: {redact_secret_text(message)}"
     if extra:
-      line += f" {json.dumps(extra)}"
+      line += f" {json.dumps(redact_secrets(extra))}"
 
     if _debug_enabled:
       _log_debug(line)
@@ -182,30 +182,18 @@ def _log_debug(line: str) -> None:
 def _mask_headers(headers: dict) -> dict:
   if not headers:
     return {}
-
-  result = {}
-  for key, value in headers.items():
-    if key.lower() == "authorization":
-      result[key] = "[redacted]"
-    else:
-      result[key] = value
-  return result
+  masked = redact_secrets(headers)
+  # Preserve the historical debug helper spelling for compatibility while the
+  # central redactor uses a shared marker for all other diagnostic structures.
+  for key in list(masked.keys()):
+    if str(key).lower() == "authorization" and masked[key] == "[REDACTED]":
+      masked[key] = "[redacted]"
+  return masked
 
 
 def _sanitize_body(body: str) -> str:
   """Redact token values from debug log bodies."""
-  redactions = (
-    ("access_token", "***"),
-    ("refresh_token", "***"),
-    ("id_token", "[REDACTED]"),
-    ("accessToken", "[REDACTED]"),
-    ("refreshToken", "[REDACTED]"),
-    ("idToken", "[REDACTED]"),
-  )
-  for key, replacement in redactions:
-    body = re.sub(rf'"{key}"\s*:\s*"[^"]+"', f'"{key}":"{replacement}"', body)
-  body = re.sub(r'Bearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer [REDACTED]', body)
-  return body
+  return redact_secret_text(body)
 
 
 def truncate_text(text: str, max_chars: int = 12000) -> str:
@@ -226,8 +214,8 @@ def format_error_for_log(error: Exception | str | None) -> str:
   if error is None:
     return ""
   if isinstance(error, Exception):
-    return str(error)
-  return error
+    return redact_secret_text(str(error))
+  return redact_secret_text(error)
 
 
 def format_account_label(email: str | None, account_index: int) -> str:

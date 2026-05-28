@@ -86,6 +86,28 @@ class Config:
 
 DEFAULT_CONFIG: Config = Config()
 
+_ALLOWED_ACCOUNT_SELECTION_STRATEGIES = {"sticky", "hybrid", "round-robin"}
+_ALLOWED_SCHEDULING_MODES = {"cache_first", "balance", "performance_first"}
+_BOOLEAN_FIELDS = {
+  "quiet_mode", "debug", "debug_tui", "keep_thinking", "session_recovery",
+  "auto_resume", "tool_id_recovery", "claude_tool_hardening",
+  "claude_prompt_auto_caching", "proactive_token_refresh", "quota_fallback",
+  "cli_first", "pid_offset_enabled", "switch_on_first_rate_limit",
+}
+_POSITIVE_INT_LIMITS = {
+  "empty_response_max_attempts": (1, 20),
+  "empty_response_retry_delay_ms": (1, 120_000),
+  "proactive_refresh_buffer_seconds": (0, 86_400),
+  "proactive_refresh_check_interval_seconds": (1, 86_400),
+  "max_rate_limit_wait_seconds": (1, 86_400),
+  "max_cache_first_wait_seconds": (0, 3_600),
+  "failure_ttl_seconds": (1, 604_800),
+  "default_retry_after_seconds": (1, 86_400),
+  "max_backoff_seconds": (1, 3_600),
+  "request_jitter_max_ms": (0, 60_000),
+  "quota_refresh_interval_minutes": (1, 1_440),
+}
+
 CONFIG_FIELD_NAMES = (
   "quiet_mode", "toast_scope", "debug", "debug_tui", "log_dir",
   "keep_thinking",
@@ -111,6 +133,149 @@ def _parse_bool(value: str) -> bool:
   return value.lower() in ("1", "true", "yes", "on")
 
 
+def _parse_bool_env(value: str, *, name: str, default: bool) -> bool:
+  lowered = value.strip().lower()
+  if lowered in ("1", "true", "yes", "on"):
+    return True
+  if lowered in ("0", "false", "no", "off"):
+    return False
+  logger.warning("Invalid boolean for %s=%r; using default %s", name, value, default)
+  return default
+
+
+def _coerce_bool_value(name: str, value: Any, default: bool) -> bool:
+  if isinstance(value, bool):
+    return value
+  if isinstance(value, str):
+    lowered = value.strip().lower()
+    if lowered in ("1", "true", "yes", "on"):
+      return True
+    if lowered in ("0", "false", "no", "off"):
+      return False
+  logger.warning("Invalid boolean config %s=%r; using default %s", name, value, default)
+  return default
+
+
+def _clamp_int_value(name: str, value: Any, default: int, minimum: int, maximum: int) -> int:
+  if isinstance(value, bool):
+    logger.warning("Invalid integer config %s=%r; using default %s", name, value, default)
+    return default
+  try:
+    coerced = int(value)
+  except Exception:
+    logger.warning("Invalid integer config %s=%r; using default %s", name, value, default)
+    return default
+  if coerced < minimum:
+    logger.warning("Config %s=%r is below %s; clamping to %s", name, value, minimum, minimum)
+    return minimum
+  if coerced > maximum:
+    logger.warning("Config %s=%r is above %s; clamping to %s", name, value, maximum, maximum)
+    return maximum
+  return coerced
+
+
+def _clamp_float_value(name: str, value: Any, default: float, minimum: float, maximum: float) -> float:
+  if isinstance(value, bool):
+    logger.warning("Invalid numeric config %s=%r; using default %s", name, value, default)
+    return default
+  try:
+    coerced = float(value)
+  except Exception:
+    logger.warning("Invalid numeric config %s=%r; using default %s", name, value, default)
+    return default
+  if coerced < minimum:
+    logger.warning("Config %s=%r is below %s; clamping to %s", name, value, minimum, minimum)
+    return minimum
+  if coerced > maximum:
+    logger.warning("Config %s=%r is above %s; clamping to %s", name, value, maximum, maximum)
+    return maximum
+  return coerced
+
+
+def validate_config(config: Config) -> Config:
+  """Return a validated/clamped config, warning on invalid values."""
+  defaults = DEFAULT_CONFIG
+  kwargs: dict[str, Any] = {}
+
+  strategy = str(getattr(config, "account_selection_strategy", defaults.account_selection_strategy))
+  if strategy not in _ALLOWED_ACCOUNT_SELECTION_STRATEGIES:
+    logger.warning(
+      "Invalid account_selection_strategy=%r; using default %s",
+      strategy,
+      defaults.account_selection_strategy,
+    )
+    strategy = defaults.account_selection_strategy
+  kwargs["account_selection_strategy"] = strategy
+
+  scheduling_mode = str(getattr(config, "scheduling_mode", defaults.scheduling_mode))
+  if scheduling_mode not in _ALLOWED_SCHEDULING_MODES:
+    logger.warning(
+      "Invalid scheduling_mode=%r; using default %s",
+      scheduling_mode,
+      defaults.scheduling_mode,
+    )
+    scheduling_mode = defaults.scheduling_mode
+  kwargs["scheduling_mode"] = scheduling_mode
+
+  for name in _BOOLEAN_FIELDS:
+    kwargs[name] = _coerce_bool_value(name, getattr(config, name), getattr(defaults, name))
+
+  for name, (minimum, maximum) in _POSITIVE_INT_LIMITS.items():
+    kwargs[name] = _clamp_int_value(name, getattr(config, name), getattr(defaults, name), minimum, maximum)
+
+  kwargs["soft_quota_threshold_percent"] = _clamp_int_value(
+    "soft_quota_threshold_percent",
+    getattr(config, "soft_quota_threshold_percent"),
+    defaults.soft_quota_threshold_percent,
+    0,
+    100,
+  )
+
+  ttl_value = getattr(config, "soft_quota_cache_ttl_minutes")
+  if isinstance(ttl_value, str) and ttl_value.strip().lower() == "auto":
+    kwargs["soft_quota_cache_ttl_minutes"] = "auto"
+  else:
+    try:
+      ttl_int = int(ttl_value)
+      if ttl_int < 1:
+        logger.warning("Config soft_quota_cache_ttl_minutes=%r is below 1; using default %s", ttl_value, defaults.soft_quota_cache_ttl_minutes)
+        kwargs["soft_quota_cache_ttl_minutes"] = defaults.soft_quota_cache_ttl_minutes
+      elif ttl_int > 1_440:
+        logger.warning("Config soft_quota_cache_ttl_minutes=%r is above 1440; clamping to 1440", ttl_value)
+        kwargs["soft_quota_cache_ttl_minutes"] = 1_440
+      else:
+        kwargs["soft_quota_cache_ttl_minutes"] = ttl_int
+    except Exception:
+      logger.warning("Invalid soft_quota_cache_ttl_minutes=%r; using default %s", ttl_value, defaults.soft_quota_cache_ttl_minutes)
+      kwargs["soft_quota_cache_ttl_minutes"] = defaults.soft_quota_cache_ttl_minutes
+
+  health = config.health_score
+  kwargs["health_score"] = HealthScoreConfig(
+    initial=_clamp_int_value("health_score.initial", health.initial, defaults.health_score.initial, 0, 100),
+    success_reward=_clamp_int_value("health_score.success_reward", health.success_reward, defaults.health_score.success_reward, 0, 100),
+    rate_limit_penalty=_clamp_int_value("health_score.rate_limit_penalty", health.rate_limit_penalty, defaults.health_score.rate_limit_penalty, -100, 0),
+    failure_penalty=_clamp_int_value("health_score.failure_penalty", health.failure_penalty, defaults.health_score.failure_penalty, -100, 0),
+    recovery_rate_per_hour=_clamp_float_value("health_score.recovery_rate_per_hour", health.recovery_rate_per_hour, defaults.health_score.recovery_rate_per_hour, 0.0, 100.0),
+    min_usable=_clamp_int_value("health_score.min_usable", health.min_usable, defaults.health_score.min_usable, 0, 100),
+    max_score=_clamp_int_value("health_score.max_score", health.max_score, defaults.health_score.max_score, 1, 100),
+  )
+  bucket = config.token_bucket
+  kwargs["token_bucket"] = TokenBucketConfig(
+    max_tokens=_clamp_int_value("token_bucket.max_tokens", bucket.max_tokens, defaults.token_bucket.max_tokens, 1, 10_000),
+    regeneration_rate_per_minute=_clamp_float_value("token_bucket.regeneration_rate_per_minute", bucket.regeneration_rate_per_minute, defaults.token_bucket.regeneration_rate_per_minute, 0.01, 10_000.0),
+    initial_tokens=_clamp_int_value("token_bucket.initial_tokens", bucket.initial_tokens, defaults.token_bucket.initial_tokens, 0, 10_000),
+  )
+  sig = config.signature_cache
+  kwargs["signature_cache"] = SignatureCacheConfig(
+    enabled=_coerce_bool_value("signature_cache.enabled", sig.enabled, defaults.signature_cache.enabled),
+    memory_ttl_seconds=_clamp_int_value("signature_cache.memory_ttl_seconds", sig.memory_ttl_seconds, defaults.signature_cache.memory_ttl_seconds, 1, 604_800),
+    disk_ttl_seconds=_clamp_int_value("signature_cache.disk_ttl_seconds", sig.disk_ttl_seconds, defaults.signature_cache.disk_ttl_seconds, 1, 2_592_000),
+    write_interval_seconds=_clamp_int_value("signature_cache.write_interval_seconds", sig.write_interval_seconds, defaults.signature_cache.write_interval_seconds, 1, 86_400),
+  )
+
+  return replace(config, **kwargs)
+
+
 def load_config_from_dict(data: dict[str, Any]) -> Config:
   kwargs: dict[str, Any] = {}
 
@@ -133,7 +298,7 @@ def load_config_from_dict(data: dict[str, Any]) -> Config:
       **_known_dataclass_kwargs(TokenBucketConfig, data["token_bucket"])
     )
 
-  return Config(**kwargs)
+  return validate_config(Config(**kwargs))
 
 
 def _known_dataclass_kwargs(cls: type[Any], values: dict[str, Any]) -> dict[str, Any]:
@@ -191,7 +356,8 @@ def load_config_from_yaml(yaml_path: Path) -> Config | None:
     if not isinstance(data, dict):
       return None
     return load_config_from_dict(_extract_config_data(data))
-  except Exception:
+  except Exception as exc:
+    logger.warning("Ignoring invalid Antigravity config YAML at %s: %s", yaml_path, exc)
     return None
 
 
@@ -218,7 +384,7 @@ def get_config(force_reload: bool = False) -> Config:
     if yaml_config is not None:
         config = yaml_config
 
-    config = apply_env_overrides(config)
+    config = validate_config(apply_env_overrides(config))
     _config_cache = config
     _config_cache_time = _time.time()
     return config
@@ -235,16 +401,16 @@ def apply_env_overrides(config: Config) -> Config:
   kwargs: dict[str, Any] = {}
 
   if "HERMES_ANTIGRAVITY_DEBUG" in os.environ:
-    kwargs["debug"] = _parse_bool(os.environ["HERMES_ANTIGRAVITY_DEBUG"])
+    kwargs["debug"] = _parse_bool_env(os.environ["HERMES_ANTIGRAVITY_DEBUG"], name="HERMES_ANTIGRAVITY_DEBUG", default=config.debug)
 
   if "HERMES_ANTIGRAVITY_QUIET" in os.environ:
-    kwargs["quiet_mode"] = _parse_bool(os.environ["HERMES_ANTIGRAVITY_QUIET"])
+    kwargs["quiet_mode"] = _parse_bool_env(os.environ["HERMES_ANTIGRAVITY_QUIET"], name="HERMES_ANTIGRAVITY_QUIET", default=config.quiet_mode)
 
   if "HERMES_ANTIGRAVITY_KEEP_THINKING" in os.environ:
-    kwargs["keep_thinking"] = _parse_bool(os.environ["HERMES_ANTIGRAVITY_KEEP_THINKING"])
+    kwargs["keep_thinking"] = _parse_bool_env(os.environ["HERMES_ANTIGRAVITY_KEEP_THINKING"], name="HERMES_ANTIGRAVITY_KEEP_THINKING", default=config.keep_thinking)
 
   if "HERMES_ANTIGRAVITY_CLI_FIRST" in os.environ:
-    kwargs["cli_first"] = _parse_bool(os.environ["HERMES_ANTIGRAVITY_CLI_FIRST"])
+    kwargs["cli_first"] = _parse_bool_env(os.environ["HERMES_ANTIGRAVITY_CLI_FIRST"], name="HERMES_ANTIGRAVITY_CLI_FIRST", default=config.cli_first)
 
   if "HERMES_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY" in os.environ:
     kwargs["account_selection_strategy"] = os.environ["HERMES_ANTIGRAVITY_ACCOUNT_SELECTION_STRATEGY"]
@@ -253,7 +419,7 @@ def apply_env_overrides(config: Config) -> Config:
     kwargs["scheduling_mode"] = os.environ["HERMES_ANTIGRAVITY_SCHEDULING_MODE"]
 
   if "HERMES_ANTIGRAVITY_DEBUG_TUI" in os.environ:
-    kwargs["debug_tui"] = _parse_bool(os.environ["HERMES_ANTIGRAVITY_DEBUG_TUI"])
+    kwargs["debug_tui"] = _parse_bool_env(os.environ["HERMES_ANTIGRAVITY_DEBUG_TUI"], name="HERMES_ANTIGRAVITY_DEBUG_TUI", default=config.debug_tui)
 
   if "HERMES_ANTIGRAVITY_LOG_DIR" in os.environ:
     kwargs["log_dir"] = os.environ["HERMES_ANTIGRAVITY_LOG_DIR"]

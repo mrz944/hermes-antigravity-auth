@@ -6,7 +6,7 @@ import secrets
 import time
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # Try to dynamically import the lock from hermes_cli.auth, fallback to a local Thread Lock
 try:
@@ -18,7 +18,7 @@ try:
 except ImportError:
     _auth_store_lock = threading.Lock()
 
-_accounts_store_lock = threading.Lock()
+_accounts_store_lock = threading.RLock()
 
 
 def _secret_file_opener(path: str, flags: int) -> int:
@@ -236,6 +236,63 @@ def save_accounts(storage_dict: dict[str, Any]) -> None:
     with _process_file_lock(path.with_suffix(".lock")):
         with _accounts_store_lock:
             _save_accounts_unlocked(path, storage_dict)
+
+
+def update_accounts(mutator: Callable[[dict[str, Any]], None | dict[str, Any]]) -> dict[str, Any]:
+    """Transactionally update antigravity-accounts.json under one file lock.
+
+    The mutator receives freshly loaded storage while the same inter-process
+    lock used by save_accounts() is held. It may mutate the dict in place and
+    return None, or return a replacement storage dict. The final data is saved
+    atomically before the lock is released and returned to the caller.
+    """
+    path = get_accounts_json_path()
+    with _process_file_lock(path.with_suffix(".lock")):
+        with _accounts_store_lock:
+            current = _load_accounts_unlocked(path)
+            replacement = mutator(current)
+            if replacement is not None:
+                if not isinstance(replacement, dict):
+                    raise TypeError("account storage mutator must return a dict or None")
+                current = replacement
+            if "version" not in current:
+                current["version"] = 4
+            if "accounts" not in current or not isinstance(current["accounts"], list):
+                current["accounts"] = []
+            if "activeIndex" not in current:
+                current["activeIndex"] = 0
+            if "cursor" not in current:
+                current["cursor"] = current.get("activeIndex", 0)
+            family_map = current.get("activeIndexByFamily")
+            if not isinstance(family_map, dict):
+                family_map = {"claude": 0, "gemini": 0}
+            else:
+                family_map.setdefault("claude", 0)
+                family_map.setdefault("gemini", 0)
+            current["activeIndexByFamily"] = family_map
+            account_count = len(current["accounts"])
+            if account_count == 0:
+                current["activeIndex"] = 0
+                current["cursor"] = 0
+                current["activeIndexByFamily"] = {"claude": 0, "gemini": 0}
+            else:
+                active_idx = current.get("activeIndex", 0)
+                if not isinstance(active_idx, int) or isinstance(active_idx, bool):
+                    active_idx = 0
+                current["activeIndex"] = max(0, min(active_idx, account_count - 1))
+                cursor = current.get("cursor", current["activeIndex"])
+                if not isinstance(cursor, int) or isinstance(cursor, bool):
+                    cursor = current["activeIndex"]
+                current["cursor"] = cursor % account_count
+                normalized_family_map: dict[str, int] = {}
+                for family in ("claude", "gemini"):
+                    family_idx = family_map.get(family, current["activeIndex"])
+                    if not isinstance(family_idx, int) or isinstance(family_idx, bool):
+                        family_idx = current["activeIndex"]
+                    normalized_family_map[family] = max(0, min(family_idx, account_count - 1))
+                current["activeIndexByFamily"] = normalized_family_map
+            _save_accounts_unlocked(path, current)
+            return current
 
 
 def sync_token_to_auth_json(

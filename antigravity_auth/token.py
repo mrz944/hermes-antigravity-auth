@@ -12,8 +12,8 @@ try:
         get_active_token_from_auth_json,
         load_accounts,
         resolve_active_account_index,
-        save_accounts,
         sync_token_to_auth_json,
+        update_accounts,
     )
 except ImportError:
     from constants import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
@@ -21,8 +21,8 @@ except ImportError:
         get_active_token_from_auth_json,
         load_accounts,
         resolve_active_account_index,
-        save_accounts,
         sync_token_to_auth_json,
+        update_accounts,
     )
 
 
@@ -242,27 +242,29 @@ def _reload_global_account_manager_best_effort() -> None:
 
 
 def _remove_invalid_grant_account_and_sync_auth(raw_refresh_token: str) -> None:
-    accounts_data = load_accounts()
-    accounts = accounts_data.get("accounts", [])
-    if not isinstance(accounts, list):
-        accounts = []
-        accounts_data["accounts"] = accounts
+    removed_flag = {"removed": False}
 
-    removed_any = False
-    idx = 0
-    while idx < len(accounts):
-        account = accounts[idx]
-        if isinstance(account, dict) and account.get("refreshToken") == raw_refresh_token:
-            accounts.pop(idx)
+    def mutator(accounts_data: dict) -> None:
+        accounts = accounts_data.get("accounts", [])
+        if not isinstance(accounts, list):
+            accounts = []
             accounts_data["accounts"] = accounts
-            _adjust_storage_indexes_after_account_removal(accounts_data, idx)
-            removed_any = True
-            continue
-        idx += 1
 
-    if removed_any:
+        idx = 0
+        while idx < len(accounts):
+            account = accounts[idx]
+            if isinstance(account, dict) and account.get("refreshToken") == raw_refresh_token:
+                accounts.pop(idx)
+                accounts_data["accounts"] = accounts
+                _adjust_storage_indexes_after_account_removal(accounts_data, idx)
+                removed_flag["removed"] = True
+                continue
+            idx += 1
+
+    accounts_data = update_accounts(mutator)
+
+    if removed_flag["removed"]:
         _reload_global_account_manager_best_effort()
-        save_accounts(accounts_data)
         _sync_runtime_auth_to_active_account_or_clear(accounts_data)
         _reload_global_account_manager_best_effort()
         return
@@ -294,14 +296,26 @@ def _apply_refresh_rotation_to_account(account: dict, parts: dict[str, str | Non
         account["managedProjectId"] = parts["managedProjectId"]
 
 
-def is_access_token_expired(auth: dict) -> bool:
+def _apply_access_cache_to_account(
+    account: dict,
+    access_token: str,
+    expires_ms: int,
+    last_refresh_at: int,
+) -> None:
+    account["accessToken"] = access_token
+    account["accessTokenExpiresAt"] = expires_ms
+    account["lastRefreshAt"] = last_refresh_at
+
+
+def is_access_token_expired(auth: dict, buffer_seconds: int = 60) -> bool:
     if not auth or "access" not in auth or not auth.get("access"):
         return True
     expires = auth.get("expires")
     if not isinstance(expires, (int, float)):
         return True
     current_ms = int(time.time() * 1000)
-    return expires <= current_ms + 60000
+    buffer_ms = max(0, int(buffer_seconds)) * 1000
+    return expires <= current_ms + buffer_ms
 
 
 def parse_oauth_error_payload(text: str | None) -> dict[str, str | None]:
@@ -442,27 +456,38 @@ def refresh_access_token(auth: dict, *, persist: bool = False, set_active: bool 
     email = auth.get("email")
     
     if persist:
+        update_state = {"saw_accounts": False, "updated_any": False, "update_failed": False}
         try:
-            sync_token_to_auth_json(
-                access_token=access_token,
-                refresh_token=new_refresh_packed,
-                project_id=project_id,
-                email=email,
-                set_active=set_active,
-            )
-        except Exception:
-            pass
+            def mutator(accounts_data: dict) -> None:
+                accounts = accounts_data.get("accounts", [])
+                update_state["saw_accounts"] = isinstance(accounts, list) and bool(accounts)
+                for acc in accounts if isinstance(accounts, list) else []:
+                    if isinstance(acc, dict) and _account_identity_matches_refresh_parts(acc, parts):
+                        _apply_refresh_rotation_to_account(acc, parts, new_raw_refresh)
+                        _apply_access_cache_to_account(acc, access_token, expires_ms, start_time_ms)
+                        update_state["updated_any"] = True
+                if update_state["updated_any"]:
+                    accounts_data["version"] = max(int(accounts_data.get("version", 4) or 4), 4)
 
-        try:
-            accounts_data = load_accounts()
-            updated_any = False
-            for acc in accounts_data.get("accounts", []):
-                if isinstance(acc, dict) and _account_identity_matches_refresh_parts(acc, parts):
-                    _apply_refresh_rotation_to_account(acc, parts, new_raw_refresh)
-                    updated_any = True
-            if updated_any:
-                save_accounts(accounts_data)
+            update_accounts(mutator)
         except Exception:
-            pass
+            update_state["update_failed"] = True
+
+        should_sync_auth = (
+            update_state["updated_any"]
+            or not update_state["saw_accounts"]
+            or update_state["update_failed"]
+        )
+        if should_sync_auth:
+            try:
+                sync_token_to_auth_json(
+                    access_token=access_token,
+                    refresh_token=new_refresh_packed,
+                    project_id=project_id,
+                    email=email,
+                    set_active=set_active,
+                )
+            except Exception:
+                pass
         
     return updated_auth
