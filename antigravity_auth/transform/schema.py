@@ -112,14 +112,6 @@ def _infer_enum_types(schema):
   return result
 
 
-def _schema_is_nullable(schema) -> bool:
-  """Returns True when a flattened schema carries the nullable hint."""
-  if not isinstance(schema, dict):
-    return False
-  description = schema.get("description")
-  return isinstance(description, str) and "nullable" in description
-
-
 def _try_merge_enum_from_union(options: list) -> list | None:
   """Checks if an anyOf/oneOf array represents enum choices.
   Returns merged enum values if so, otherwise None.
@@ -432,7 +424,7 @@ def _flatten_any_of_one_of(schema):
   return result
 
 
-def _flatten_type_arrays(schema, _nullable_fields: set | None = None):
+def _flatten_type_arrays(schema):
   """Phase 2c: Flattens type arrays to single type with nullable hint."""
   if isinstance(schema, list):
     return [_flatten_type_arrays(item) for item in schema]
@@ -441,7 +433,6 @@ def _flatten_type_arrays(schema, _nullable_fields: set | None = None):
     return schema
 
   result = {**schema}
-  nullable_fields = set()
 
   # Handle type array at this level
   if isinstance(result.get("type"), list):
@@ -468,18 +459,7 @@ def _flatten_type_arrays(schema, _nullable_fields: set | None = None):
     for prop_key, prop_value in result["properties"].items():
       processed = _flatten_type_arrays(prop_value)
       new_props[prop_key] = processed
-      # Track nullable fields for required cleanup
-      if _schema_is_nullable(processed):
-        nullable_fields.add(prop_key)
     result["properties"] = new_props
-
-  # Remove nullable fields from this object's own required array.
-  if isinstance(result.get("required"), list) and nullable_fields:
-    filtered = [r for r in result["required"] if r not in nullable_fields]
-    if filtered:
-      result["required"] = filtered
-    else:
-      del result["required"]
 
   # Recursively process other nested objects
   for key, value in list(result.items()):

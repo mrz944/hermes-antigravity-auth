@@ -426,7 +426,7 @@ class TestFlattenTypeArrays(unittest.TestCase):
     result = _flatten_type_arrays(schema)
     self.assertEqual(result, {"type": "string"})
 
-  def test_nullable_field_removed_from_required(self):
+  def test_nullable_field_preserved_in_required(self):
     schema = {
       "type": "object",
       "properties": {
@@ -436,9 +436,9 @@ class TestFlattenTypeArrays(unittest.TestCase):
       "required": ["name", "age"],
     }
     result = _flatten_type_arrays(schema)
-    self.assertEqual(result["required"], ["age"])
+    self.assertEqual(result["required"], ["name", "age"])
 
-  def test_all_nullable_removes_required(self):
+  def test_all_nullable_preserves_required(self):
     schema = {
       "type": "object",
       "properties": {
@@ -447,7 +447,7 @@ class TestFlattenTypeArrays(unittest.TestCase):
       "required": ["name"],
     }
     result = _flatten_type_arrays(schema)
-    self.assertNotIn("required", result)
+    self.assertEqual(result["required"], ["name"])
 
   def test_no_type_array_passthrough(self):
     schema = {"type": "object", "properties": {"a": {"type": "string"}}}
@@ -655,7 +655,26 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
     result = clean_json_schema(schema)
     self.assertEqual(result["properties"]["name"]["type"], "string")
     self.assertIn("nullable", result["properties"]["name"]["description"])
-    self.assertNotIn("required", result)
+    self.assertEqual(result["required"], ["name"])
+
+  def test_non_nullable_description_does_not_remove_required(self):
+    schema = {
+      "type": "object",
+      "properties": {"id": {"type": "string", "description": "non-nullable identifier"}},
+      "required": ["id"],
+    }
+    cleaned = clean_json_schema(schema)
+    self.assertEqual(cleaned.get("required"), ["id"])
+
+  def test_nullable_type_array_preserves_required_presence(self):
+    schema = {
+      "type": "object",
+      "properties": {"id": {"type": ["string", "null"]}},
+      "required": ["id"],
+    }
+    cleaned = clean_json_schema(schema)
+    self.assertEqual(cleaned.get("required"), ["id"])
+    self.assertIn("nullable", cleaned["properties"]["id"].get("description", ""))
 
   def test_numeric_enum_values_are_not_stringified(self):
     schema = {"type": "object", "properties": {"n": {"enum": [1, 2, 3]}}}
@@ -675,7 +694,7 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
     self.assertEqual(out["properties"]["enum"]["enum"], ["a", "b"])
     self.assertEqual(out["properties"]["enum"]["type"], "string")
 
-  def test_nested_nullable_required_field_is_removed_from_required(self):
+  def test_nested_nullable_required_field_preserved_in_required(self):
     schema = {
       "type": "object",
       "properties": {
@@ -687,7 +706,7 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
       },
     }
     out = clean_json_schema(schema)
-    self.assertNotIn("maybe", out["properties"]["outer"].get("required", []))
+    self.assertEqual(out["properties"]["outer"].get("required"), ["maybe"])
 
   def test_unsupported_keywords_removed(self):
     schema = {"type": "string", "title": "Test", "$schema": "http://...", "$id": "test"}
@@ -749,7 +768,7 @@ class TestCleanJsonSchemaIntegration(unittest.TestCase):
     self.assertIn("value", items["properties"])
     self.assertIn("minLength: 1", items["properties"]["name"]["description"])
     self.assertIn("nullable", items["properties"]["value"]["description"])
-    self.assertEqual(items["required"], ["name"])
+    self.assertEqual(items["required"], ["name", "value"])
 
   def test_immutable_input(self):
     original = {"type": "string", "enum": ["a", "b", "c"]}
