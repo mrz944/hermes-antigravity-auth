@@ -46,15 +46,48 @@ def _request_model_from_response(response: httpx.Response) -> str:
   return ""
 
 
+def _account_identity_for_managed_account(account: Any) -> dict[str, str | None]:
+  parts = getattr(account, "refresh_parts", None)
+  return {
+    "email": getattr(account, "email", None),
+    "refresh_token": getattr(parts, "refresh_token", None),
+    "project_id": getattr(parts, "project_id", None),
+    "managed_project_id": getattr(parts, "managed_project_id", None),
+  }
+
+
+def _account_identity_for_account_dict(account: dict[str, Any]) -> dict[str, str | None]:
+  return {
+    "email": account.get("email"),
+    "refresh_token": account.get("refreshToken"),
+    "project_id": account.get("projectId"),
+    "managed_project_id": account.get("managedProjectId"),
+  }
+
+
+def _account_identity_matches(actual: dict[str, Any], expected: Any) -> bool:
+  if not isinstance(expected, dict):
+    return True
+  for key in ("email", "refresh_token", "project_id", "managed_project_id"):
+    if (actual.get(key) or None) != (expected.get(key) or None):
+      return False
+  return True
+
+
 def _response_account_for_request(mgr: Any, request_extensions: dict, family: str) -> Any:
   selected_idx = request_extensions.get("antigravity_selected_account_index")
+  selected_identity = request_extensions.get("antigravity_selected_account_identity")
   if isinstance(selected_idx, int) and not isinstance(selected_idx, bool):
     try:
       selected = mgr.get_account_by_index(selected_idx)
     except AttributeError:
       selected = None
-    if selected is not None:
+    if selected is not None and _account_identity_matches(
+      _account_identity_for_managed_account(selected),
+      selected_identity,
+    ):
       return selected
+    return None
   return mgr.get_current_account_for_family(family)
 
 
@@ -156,7 +189,11 @@ def _select_request_account(model: str, header_style: str, config: Any) -> dict[
       return None
 
     packed_refresh = _packed_refresh_for_account(account)
-    refreshed = refresh_access_token({"refresh": packed_refresh, "email": account.email})
+    refreshed = refresh_access_token(
+      {"refresh": packed_refresh, "email": account.email},
+      persist=True,
+      set_active=True,
+    )
     if not refreshed or not refreshed.get("access"):
       return None
 
@@ -197,6 +234,7 @@ def _select_request_account(model: str, header_style: str, config: Any) -> dict[
       "access": refreshed["access"],
       "account": account,
       "account_index": account.index,
+      "account_identity": _account_identity_for_managed_account(account),
       "family": family,
     }
   except Exception as e:
@@ -437,6 +475,7 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
         selected_index = selected.get("account_index")
         if type(selected_index) is int:
             request.extensions["antigravity_selected_account_index"] = selected_index
+            request.extensions["antigravity_selected_account_identity"] = selected.get("account_identity")
         request.headers["Authorization"] = f"Bearer {selected['access']}"
     else:
         request.extensions["antigravity_account_selection_failed"] = True
@@ -474,10 +513,19 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                 return
             idx = resolve_active_account_index(d, family=family)
             selected_idx = request_extensions.get("antigravity_selected_account_index")
-            if type(selected_idx) is int and is_valid_account_index(selected_idx, len(accs)):
+            selected_identity = request_extensions.get("antigravity_selected_account_identity")
+            selected_idx_present = type(selected_idx) is int
+            if selected_idx_present:
+                if not is_valid_account_index(selected_idx, len(accs)):
+                    return
                 idx = selected_idx
             if 0 <= idx < len(accs):
                 a = accs[idx]
+                if selected_idx_present and not _account_identity_matches(
+                    _account_identity_for_account_dict(a),
+                    selected_identity,
+                ):
+                    return
                 raw_refresh = a.get("refreshToken", "")
                 if not raw_refresh:
                     return
@@ -486,7 +534,11 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                     "projectId": a.get("projectId") or "",
                     "managedProjectId": a.get("managedProjectId") or "",
                 })
-                r = refresh_access_token({"refresh": packed_refresh, "email": a.get("email")})
+                r = refresh_access_token(
+                    {"refresh": packed_refresh, "email": a.get("email")},
+                    persist=True,
+                    set_active=True,
+                )
                 if r.get("access"):
                     parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
                         refreshed=r,
@@ -533,7 +585,11 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                         "projectId": next_acc.refresh_parts.project_id or "",
                         "managedProjectId": next_acc.refresh_parts.managed_project_id or "",
                     })
-                    r = refresh_access_token({"refresh": packed_refresh, "email": next_acc.email})
+                    r = refresh_access_token(
+                        {"refresh": packed_refresh, "email": next_acc.email},
+                        persist=True,
+                        set_active=True,
+                    )
                     if r.get("access"):
                         parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
                             refreshed=r,
@@ -626,7 +682,11 @@ def _antigravity_response_hook(response: httpx.Response) -> None:
                         "projectId": next_acc.refresh_parts.project_id or "",
                         "managedProjectId": next_acc.refresh_parts.managed_project_id or "",
                     })
-                    r = refresh_access_token({"refresh": packed_refresh, "email": next_acc.email})
+                    r = refresh_access_token(
+                        {"refresh": packed_refresh, "email": next_acc.email},
+                        persist=True,
+                        set_active=True,
+                    )
                     if r.get("access"):
                         parsed_refresh = _sync_refreshed_token_to_all_auth_stores(
                             refreshed=r,

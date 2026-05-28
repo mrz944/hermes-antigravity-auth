@@ -80,7 +80,11 @@ def _refresh_if_needed(config) -> None:
                 "projectId": acc.get("projectId") or "",
                 "managedProjectId": acc.get("managedProjectId") or "",
             })
-            refreshed = refresh_access_token({"refresh": packed_refresh, "email": acc.get("email")})
+            refreshed = refresh_access_token(
+                {"refresh": packed_refresh, "email": acc.get("email")},
+                persist=True,
+                set_active=True,
+            )
             new_token = refreshed.get("access", "")
             if new_token:
                 synced_refresh = refreshed.get("refresh") or packed_refresh

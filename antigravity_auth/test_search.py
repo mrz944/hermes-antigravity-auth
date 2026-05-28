@@ -411,7 +411,11 @@ class TestSearchToolRegistration(unittest.TestCase):
             output = registry.kwargs["handler"]({"query": "hello"})
 
         self.assertEqual(output, "searched")
-        refresh_mock.assert_called_once_with({"refresh": "refresh|proj", "email": "user@example.com"})
+        refresh_mock.assert_called_once_with(
+            {"refresh": "refresh|proj", "email": "user@example.com"},
+            persist=True,
+            set_active=True,
+        )
         search_mock.assert_called_once()
 
     def test_search_handler_falls_back_to_first_account_when_active_index_is_malformed(self):
@@ -445,7 +449,11 @@ class TestSearchToolRegistration(unittest.TestCase):
                     output = registry.kwargs["handler"]({"query": "hello"})
 
                 self.assertEqual(output, "searched")
-                refresh_mock.assert_called_once_with({"refresh": "refresh|proj", "email": "user@example.com"})
+                refresh_mock.assert_called_once_with(
+                    {"refresh": "refresh|proj", "email": "user@example.com"},
+                    persist=True,
+                    set_active=True,
+                )
                 search_mock.assert_called_once()
 
     def test_search_handler_uses_gemini_family_active_index(self):
@@ -484,10 +492,14 @@ class TestSearchToolRegistration(unittest.TestCase):
             output = registry.kwargs["handler"]({"query": "hello"})
 
         self.assertEqual(output, "searched")
-        refresh_mock.assert_called_once_with({
-            "refresh": "gemini-refresh|gemini-project|gemini-managed",
-            "email": "gemini@example.com",
-        })
+        refresh_mock.assert_called_once_with(
+            {
+                "refresh": "gemini-refresh|gemini-project|gemini-managed",
+                "email": "gemini@example.com",
+            },
+            persist=True,
+            set_active=True,
+        )
         search_args, access_token, project_id = search_mock.call_args.args
         self.assertEqual(search_args.query, "hello")
         self.assertEqual(access_token, "gemini-access")

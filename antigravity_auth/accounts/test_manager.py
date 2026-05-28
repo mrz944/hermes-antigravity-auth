@@ -45,8 +45,15 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.mkdtemp()
         self.accounts_path = Path(self.tmpdir) / "antigravity-accounts.json"
+        self._managers: list[AccountManager] = []
 
     def tearDown(self) -> None:
+        for manager in getattr(self, "_managers", []):
+            timer = getattr(manager, "_save_timer", None)
+            if timer is not None:
+                timer.cancel()
+            manager._save_timer = None
+            manager._save_pending = False
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -60,7 +67,9 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
             "antigravity_auth.storage.get_accounts_json_path",
             return_value=self.accounts_path,
         ):
-            return AccountManager.load_from_disk()
+            manager = AccountManager.load_from_disk()
+        self._managers.append(manager)
+        return manager
 
     # ------------------------------------------------------------------
     # Tests
@@ -84,6 +93,96 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
         manager = self._make_manager(data)
         self.assertEqual(manager.get_account_count(), 1)
         self.assertEqual(manager.get_total_account_count(), 1)
+
+    def test_reload_from_disk_mutates_existing_manager_and_cancels_pending_save(self) -> None:
+        data = {
+            "version": 4,
+            "accounts": [
+                {"email": "bad@example.com", "refreshToken": "refresh-bad", "projectId": "proj-bad"},
+                {"email": "good@example.com", "refreshToken": "refresh-good", "projectId": "proj-good"},
+            ],
+            "activeIndex": 0,
+            "cursor": 1,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        manager = self._make_manager(data)
+        manager._request_save_to_disk()
+        self.assertTrue(manager._save_pending)
+        self.assertIsNotNone(manager._save_timer)
+
+        self._write_accounts({
+            "version": 4,
+            "accounts": [
+                {"email": "good@example.com", "refreshToken": "refresh-good", "projectId": "proj-good"},
+            ],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            manager.reload_from_disk()
+
+        self.assertFalse(manager._save_pending)
+        self.assertIsNone(manager._save_timer)
+        self.assertEqual(manager.get_total_account_count(), 1)
+        self.assertEqual(manager.get_accounts()[0].email, "good@example.com")
+        current = manager.get_current_account_for_family("claude")
+        self.assertIsNotNone(current)
+        assert current is not None
+        self.assertEqual(current.email, "good@example.com")
+
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            self.assertTrue(manager.save_to_disk())
+        with open(self.accounts_path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        self.assertEqual([a["email"] for a in stored["accounts"]], ["good@example.com"])
+
+    def test_reload_invalidates_captured_debounce_callback(self) -> None:
+        """A debounce callback captured before reload cannot save stale state later."""
+        data = {
+            "version": 4,
+            "accounts": [
+                {"email": "bad@example.com", "refreshToken": "refresh-bad", "projectId": "proj-bad"},
+                {"email": "good@example.com", "refreshToken": "refresh-good", "projectId": "proj-good"},
+            ],
+            "activeIndex": 0,
+            "cursor": 1,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        manager = self._make_manager(data)
+        manager._request_save_to_disk()
+        timer = manager._save_timer
+        self.assertIsNotNone(timer)
+
+        self._write_accounts({
+            "version": 4,
+            "accounts": [
+                {"email": "good@example.com", "refreshToken": "refresh-good", "projectId": "proj-good"},
+            ],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            manager.reload_from_disk()
+
+        assert timer is not None
+        with mock.patch("antigravity_auth.storage.save_accounts") as save_accounts:
+            timer.function()
+        save_accounts.assert_not_called()
+
+        with open(self.accounts_path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        self.assertEqual([a["email"] for a in stored["accounts"]], ["good@example.com"])
 
     def test_gets_current_for_family(self) -> None:
         """get_current_account_for_family returns the active account."""
@@ -422,7 +521,15 @@ class TestAccountManagerWithAccounts(unittest.TestCase):
             "activeIndexByFamily": {"claude": 0, "gemini": 0},
         }
         manager = self._make_manager(data)
-        manager.remove_account(0)
+        with mock.patch(
+            "antigravity_auth.storage.get_accounts_json_path",
+            return_value=self.accounts_path,
+        ):
+            manager.remove_account(0)
+            if manager._save_timer is not None:
+                manager._save_timer.cancel()
+                manager._save_timer = None
+                manager._save_pending = False
         remaining = manager.get_accounts()
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0].index, 0)

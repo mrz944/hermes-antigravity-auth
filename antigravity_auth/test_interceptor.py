@@ -209,6 +209,12 @@ class TestRequestHook(unittest.TestCase):
 
         self.assertEqual(r.headers["Authorization"], "Bearer selected-access")
         self.assertEqual(r.extensions["antigravity_selected_account_index"], 7)
+        self.assertEqual(r.extensions["antigravity_selected_account_identity"], {
+            "email": "selected@example.com",
+            "refresh_token": "refresh-1",
+            "project_id": "proj-1",
+            "managed_project_id": "managed-1",
+        })
         self.assertEqual(fake_mgr.family, "claude")
         self.assertEqual(fake_mgr.model, "claude-sonnet-4-6-thinking")
         self.assertEqual(fake_mgr.header_style, "antigravity")
@@ -342,6 +348,44 @@ class TestRequestHook(unittest.TestCase):
         self.assertTrue(fake_mgr.saved)
         self.assertTrue(any("Native google_oauth sync failed" in message for message in logs.output))
 
+    def test_request_account_refresh_uses_persist_true(self):
+        from antigravity_auth.interceptor import _select_request_account
+
+        class FakeAccount:
+            index = 0
+            email = "user@example.com"
+            refresh_parts = type("Refresh", (), {
+                "refresh_token": "r",
+                "project_id": "p",
+                "managed_project_id": "m",
+            })()
+
+        class FakeManager:
+            def get_current_or_next_for_family(self, *args, **kwargs):
+                return FakeAccount()
+
+            def mark_account_used(self, index):
+                pass
+
+            def save_to_disk(self):
+                return True
+
+        config = type("Config", (), {
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+        })()
+        calls = []
+
+        with patch("antigravity_auth.accounts.shared.get_or_create_global_manager", return_value=FakeManager()), \
+             patch("antigravity_auth.token.refresh_access_token", side_effect=lambda auth, **kw: calls.append(kw) or {"access": "a", "refresh": "r|p|m"}), \
+             patch("antigravity_auth.auth_sync.sync_token_to_all_auth_stores", return_value=True):
+            _select_request_account("claude-sonnet-4-6", "antigravity", config)
+
+        self.assertEqual(calls[0].get("persist"), True)
+
     def test_request_hook_removes_stale_authorization_when_selection_fails(self):
         from antigravity_auth.interceptor import _antigravity_request_hook
 
@@ -430,6 +474,12 @@ class TestRequestHook(unittest.TestCase):
 
         self.assertEqual(fake_mgr.save_snapshot, ("new-refresh", "proj-2", "managed-2"))
         self.assertEqual(r.headers["Authorization"], "Bearer selected-access")
+        self.assertEqual(r.extensions["antigravity_selected_account_identity"], {
+            "email": "selected@example.com",
+            "refresh_token": "new-refresh",
+            "project_id": "proj-2",
+            "managed_project_id": "managed-2",
+        })
 
     def test_passthrough_non_cloudcode(self):
         r = httpx.Request("GET", "https://example.com/api")
@@ -490,6 +540,149 @@ class TestResponseHook(unittest.TestCase):
             )
         response_kwargs = {"json": json_body} if json_body is not None else {}
         return httpx.Response(status, request=req, headers={"Retry-After": "3"}, **response_kwargs)
+
+    def test_response_account_for_request_skips_reindexed_identity_mismatch(self):
+        from antigravity_auth.interceptor import _response_account_for_request
+
+        class FakeRefreshParts:
+            refresh_token = "other-refresh"
+            project_id = "other-project"
+            managed_project_id = "other-managed"
+
+        class FakeAccount:
+            index = 0
+            email = "other@example.com"
+            refresh_parts = FakeRefreshParts()
+
+        class FakeManager:
+            def __init__(self):
+                self.current_requested = False
+
+            def get_account_by_index(self, index):
+                return FakeAccount() if index == 0 else None
+
+            def get_current_account_for_family(self, family):
+                self.current_requested = True
+                return FakeAccount()
+
+        mgr = FakeManager()
+        selected = _response_account_for_request(mgr, {
+            "antigravity_selected_account_index": 0,
+            "antigravity_selected_account_identity": {
+                "email": "removed@example.com",
+                "refresh_token": "removed-refresh",
+                "project_id": "removed-project",
+                "managed_project_id": "removed-managed",
+            },
+        }, "gemini")
+
+        self.assertIsNone(selected)
+        self.assertFalse(mgr.current_requested)
+
+    def test_403_does_not_cool_reindexed_account_when_identity_mismatches(self):
+        from antigravity_auth.interceptor import _antigravity_response_hook
+
+        class FakeRefreshParts:
+            refresh_token = "other-refresh"
+            project_id = "other-project"
+            managed_project_id = "other-managed"
+
+        class FakeAccount:
+            def __init__(self):
+                self.index = 0
+                self.email = "other@example.com"
+                self.refresh_parts = FakeRefreshParts()
+                self.cooling_down_until = None
+                self.cooldown_reason = None
+
+        class FakeManager:
+            def __init__(self):
+                self.account = FakeAccount()
+                self.saved = False
+                self.rotation_requested = False
+
+            def get_account_by_index(self, index):
+                return self.account if index == 0 else None
+
+            def get_current_account_for_family(self, family):
+                return self.account
+
+            def get_current_or_next_for_family(self, family, **kwargs):
+                self.rotation_requested = True
+                return self.account
+
+            def save_to_disk(self):
+                self.saved = True
+                return True
+
+        config = type("Config", (), {
+            "proactive_token_refresh": False,
+            "switch_on_first_rate_limit": True,
+            "default_retry_after_seconds": 10,
+            "cli_first": False,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+        })()
+        mgr = FakeManager()
+        response = self._make_response(model="gemini-3.1-pro-high", status=403)
+        response.request.extensions["antigravity_selected_account_index"] = 0
+        response.request.extensions["antigravity_selected_account_identity"] = {
+            "email": "removed@example.com",
+            "refresh_token": "removed-refresh",
+            "project_id": "removed-project",
+            "managed_project_id": "removed-managed",
+        }
+
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.accounts.manager.get_or_create_global_manager",
+            return_value=mgr,
+        ):
+            _antigravity_response_hook(response)
+
+        self.assertIsNone(mgr.account.cooldown_reason)
+        self.assertFalse(mgr.saved)
+        self.assertFalse(mgr.rotation_requested)
+
+    def test_401_does_not_refresh_reindexed_account_when_identity_mismatches(self):
+        from antigravity_auth.interceptor import _antigravity_response_hook
+        from antigravity_auth.storage import save_accounts
+
+        save_accounts({
+            "version": 4,
+            "accounts": [{
+                "email": "other@example.com",
+                "refreshToken": "other-refresh",
+                "projectId": "other-project",
+                "managedProjectId": "other-managed",
+            }],
+            "activeIndex": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        response = self._make_response(model="gemini-3.1-pro-high", status=401)
+        response.request.extensions["antigravity_selected_account_index"] = 0
+        response.request.extensions["antigravity_selected_account_identity"] = {
+            "email": "removed@example.com",
+            "refresh_token": "removed-refresh",
+            "project_id": "removed-project",
+            "managed_project_id": "removed-managed",
+        }
+        config = type("Config", (), {
+            "proactive_token_refresh": True,
+            "switch_on_first_rate_limit": True,
+            "default_retry_after_seconds": 10,
+            "cli_first": False,
+        })()
+
+        with patch("antigravity_auth.config.get_config", return_value=config), patch(
+            "antigravity_auth.token.refresh_access_token",
+            return_value={"access": "should-not-be-used"},
+        ) as refresh_mock:
+            _antigravity_response_hook(response)
+
+        refresh_mock.assert_not_called()
 
     def test_429_for_claude_marks_claude_family(self):
         from antigravity_auth.interceptor import _antigravity_response_hook

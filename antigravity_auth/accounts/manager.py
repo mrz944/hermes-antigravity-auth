@@ -65,6 +65,7 @@ class AccountManager:
     self._lock = threading.Lock()
     self._save_pending: bool = False
     self._save_timer: threading.Timer | None = None
+    self._save_generation: int = 0
 
   # ========== Account Loading ==========
 
@@ -78,6 +79,30 @@ class AccountManager:
       return manager
     manager._load_from_stored(stored)
     return manager
+
+  def reload_from_disk(self) -> None:
+    """Reload accounts from storage into this existing manager instance."""
+    from ..storage import load_accounts
+
+    with self._lock:
+      self._save_generation += 1
+      if self._save_timer is not None:
+        self._save_timer.cancel()
+        self._save_timer = None
+      self._save_pending = False
+      stored = load_accounts()
+      self._accounts = []
+      self._cursor = 0
+      self._current_account_by_family = {
+        "claude": -1,
+        "gemini": -1,
+      }
+      self._session_offset_applied = {
+        "claude": False,
+        "gemini": False,
+      }
+      if stored and stored.get("accounts"):
+        self._load_from_stored(stored)
 
   def _load_from_stored(self, stored: dict[str, Any]) -> None:
     """Load accounts from stored JSON data."""
@@ -435,6 +460,10 @@ class AccountManager:
   # ========== Persistence ==========
 
   def save_to_disk(self) -> bool:
+    with self._lock:
+      return self._save_to_disk_locked()
+
+  def _save_to_disk_locked(self) -> bool:
     claude_index = max(0, self._current_account_by_family.get("claude", 0))
     gemini_index = max(0, self._current_account_by_family.get("gemini", 0))
 
@@ -492,21 +521,30 @@ class AccountManager:
       return False
 
   def _request_save_to_disk(self) -> None:
+    timer: threading.Timer | None = None
+
+    def _do_save():
+      with self._lock:
+        if (
+          self._save_timer is not timer
+          or not self._save_pending
+          or self._save_generation != save_generation
+        ):
+          return
+        self._save_to_disk_locked()
+        if self._save_timer is timer:
+          self._save_pending = False
+          self._save_timer = None
+
     with self._lock:
       if self._save_timer is not None:
         self._save_timer.cancel()
         self._save_timer = None
       self._save_pending = True
-
-    def _do_save():
-      self.save_to_disk()
-      with self._lock:
-        self._save_pending = False
-        self._save_timer = None
-
-    timer = threading.Timer(SAVE_DEBOUNCE_MS / 1000, _do_save)
-    timer.daemon = True
-    self._save_timer = timer
+      save_generation = self._save_generation
+      timer = threading.Timer(SAVE_DEBOUNCE_MS / 1000, _do_save)
+      timer.daemon = True
+      self._save_timer = timer
     timer.start()
 
   # ========== Quota Cache ==========

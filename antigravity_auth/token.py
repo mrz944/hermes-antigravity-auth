@@ -228,6 +228,19 @@ def _sync_runtime_auth_to_active_account_or_clear(accounts_data: dict) -> None:
     )
 
 
+def _reload_global_account_manager_best_effort() -> None:
+    try:
+        try:
+            from .accounts.shared import get_global_manager
+        except ImportError:
+            from accounts.shared import get_global_manager
+        manager = get_global_manager()
+        if manager is not None:
+            manager.reload_from_disk()
+    except Exception:
+        pass
+
+
 def _remove_invalid_grant_account_and_sync_auth(raw_refresh_token: str) -> None:
     accounts_data = load_accounts()
     accounts = accounts_data.get("accounts", [])
@@ -248,12 +261,15 @@ def _remove_invalid_grant_account_and_sync_auth(raw_refresh_token: str) -> None:
         idx += 1
 
     if removed_any:
+        _reload_global_account_manager_best_effort()
         save_accounts(accounts_data)
         _sync_runtime_auth_to_active_account_or_clear(accounts_data)
+        _reload_global_account_manager_best_effort()
         return
 
     if _auth_json_points_at_raw_refresh_token(raw_refresh_token):
         _sync_runtime_auth_to_active_account_or_clear(accounts_data)
+        _reload_global_account_manager_best_effort()
 
 
 def _account_identity_matches_refresh_parts(account: dict, parts: dict[str, str | None]) -> bool:
@@ -436,17 +452,17 @@ def refresh_access_token(auth: dict, *, persist: bool = False, set_active: bool 
             )
         except Exception:
             pass
-        
-    try:
-        accounts_data = load_accounts()
-        updated_any = False
-        for acc in accounts_data.get("accounts", []):
-            if isinstance(acc, dict) and _account_identity_matches_refresh_parts(acc, parts):
-                _apply_refresh_rotation_to_account(acc, parts, new_raw_refresh)
-                updated_any = True
-        if updated_any:
-            save_accounts(accounts_data)
-    except Exception:
-        pass
+
+        try:
+            accounts_data = load_accounts()
+            updated_any = False
+            for acc in accounts_data.get("accounts", []):
+                if isinstance(acc, dict) and _account_identity_matches_refresh_parts(acc, parts):
+                    _apply_refresh_rotation_to_account(acc, parts, new_raw_refresh)
+                    updated_any = True
+            if updated_any:
+                save_accounts(accounts_data)
+        except Exception:
+            pass
         
     return updated_auth

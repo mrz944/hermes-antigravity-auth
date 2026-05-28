@@ -50,7 +50,11 @@ def _register_search_tool(registry: Any) -> None:
             "projectId": acc.get("projectId") or "",
             "managedProjectId": acc.get("managedProjectId") or "",
         })
-        refreshed = refresh_access_token({"refresh": packed_refresh, "email": acc.get("email")})
+        refreshed = refresh_access_token(
+            {"refresh": packed_refresh, "email": acc.get("email")},
+            persist=True,
+            set_active=True,
+        )
         access_token = refreshed.get("access", "")
         if not access_token:
             return json.dumps({"error": "Failed to refresh access token"})

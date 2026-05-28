@@ -27,8 +27,13 @@ class TestToken(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_hermes_home = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = self.temp_dir.name
+        from .accounts import shared
+        self.original_shared_manager = shared.get_global_manager()
+        shared._instance = None
 
     def tearDown(self):
+        from .accounts import shared
+        shared._instance = self.original_shared_manager
         if self.original_hermes_home is not None:
             os.environ["HERMES_HOME"] = self.original_hermes_home
         else:
@@ -179,6 +184,49 @@ class TestToken(unittest.TestCase):
         self.assertEqual(active["refresh_token"], "new_rotated_refresh_token_xyz|proj_abc")
 
     @patch("urllib.request.urlopen")
+    def test_refresh_access_token_rotation_without_persist_does_not_mutate_accounts(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({
+            "access_token": "new_access_token_abc",
+            "expires_in": 3600,
+            "refresh_token": "new_rotated_refresh_token_xyz"
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "test@example.com",
+                    "refreshToken": "old_refresh_123",
+                    "projectId": "proj_abc",
+                }
+            ]
+        }
+        save_accounts(accounts_data)
+
+        auth = {
+            "refresh": "old_refresh_123|proj_abc",
+            "access": "old_access",
+            "expires": 0,
+            "email": "test@example.com",
+        }
+
+        with patch("antigravity_auth.token.load_accounts") as mock_load_accounts, \
+             patch("antigravity_auth.token.save_accounts") as mock_save_accounts:
+            updated_auth = refresh_access_token(auth)
+
+        self.assertEqual(updated_auth["access"], "new_access_token_abc")
+        self.assertEqual(updated_auth["refresh"], "new_rotated_refresh_token_xyz|proj_abc")
+        mock_load_accounts.assert_not_called()
+        mock_save_accounts.assert_not_called()
+
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "old_refresh_123")
+        self.assertEqual(loaded["accounts"][0]["projectId"], "proj_abc")
+
+    @patch("urllib.request.urlopen")
     def test_refresh_access_token_revoked(self, mock_urlopen):
         self._mock_invalid_grant(mock_urlopen)
 
@@ -312,6 +360,66 @@ class TestToken(unittest.TestCase):
         self.assertEqual(auth_json["providers"]["antigravity"]["email"], "keep@example.com")
 
     @patch("urllib.request.urlopen")
+    def test_invalid_grant_persist_reloads_global_manager_to_prevent_resurrection(self, mock_urlopen):
+        self._mock_invalid_grant(mock_urlopen)
+        from .accounts.manager import AccountManager
+        from .accounts.shared import set_global_manager
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "bad@example.com",
+                    "refreshToken": "bad-refresh",
+                    "projectId": "proj-bad",
+                },
+                {
+                    "email": "good@example.com",
+                    "refreshToken": "good-refresh",
+                    "projectId": "proj-good",
+                },
+            ],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        save_accounts(accounts_data)
+        manager = AccountManager.load_from_disk()
+        set_global_manager(manager)
+        self.assertEqual(manager.get_total_account_count(), 2)
+        manager._request_save_to_disk()
+        self.assertTrue(manager._save_pending)
+        self.assertIsNotNone(manager._save_timer)
+
+        with self.assertRaises(AntigravityTokenRefreshError) as context:
+            refresh_access_token({
+                "refresh": "bad-refresh|proj-bad",
+                "access": "bad-access",
+                "expires": 0,
+                "email": "bad@example.com",
+            }, persist=True, set_active=True)
+
+        self.assertEqual(context.exception.code, "invalid_grant")
+        loaded = load_accounts()
+        self.assertEqual([a["email"] for a in loaded["accounts"]], ["good@example.com"])
+        self.assertEqual([a["refreshToken"] for a in loaded["accounts"]], ["good-refresh"])
+        self.assertEqual(manager.get_total_account_count(), 1)
+        self.assertEqual(manager.get_accounts()[0].email, "good@example.com")
+        self.assertFalse(manager._save_pending)
+        self.assertIsNone(manager._save_timer)
+
+        manager.save_to_disk()
+        loaded_after_stale_save = load_accounts()
+        self.assertEqual(
+            [a["email"] for a in loaded_after_stale_save["accounts"]],
+            ["good@example.com"],
+        )
+        self.assertEqual(
+            [a["refreshToken"] for a in loaded_after_stale_save["accounts"]],
+            ["good-refresh"],
+        )
+
+    @patch("urllib.request.urlopen")
     def test_invalid_grant_persist_repairs_auth_when_failing_token_is_stale(self, mock_urlopen):
         self._mock_invalid_grant(mock_urlopen)
 
@@ -428,7 +536,7 @@ class TestToken(unittest.TestCase):
             "access": "old_access",
             "expires": 0,
             "email": "a@example.com",
-        })
+        }, persist=True)
 
         self.assertEqual(updated_auth["refresh"], "rotated_refresh_for_project_a|project_a|managed_a")
         loaded = load_accounts()
