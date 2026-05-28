@@ -41,7 +41,10 @@ def _process_lock_backend_name() -> tuple[str | None, str]:
         return "fcntl", "POSIX fcntl.flock"
     except Exception as fcntl_exc:
         try:
-            import msvcrt  # noqa: F401
+            import msvcrt
+            getattr(msvcrt, "locking")
+            getattr(msvcrt, "LK_LOCK")
+            getattr(msvcrt, "LK_UNLCK")
             return "msvcrt", "Windows msvcrt.locking"
         except Exception as msvcrt_exc:
             return None, f"fcntl unavailable ({fcntl_exc}); msvcrt unavailable ({msvcrt_exc})"
@@ -105,7 +108,7 @@ def _acquire_process_file_lock(lock_file: Any, lock_path: Path) -> Callable[[], 
         unlock_mode = getattr(msvcrt, "LK_UNLCK")
         lock_file.seek(0, os.SEEK_END)
         if lock_file.tell() == 0:
-            lock_file.write("0")
+            lock_file.write(b"0")
             lock_file.flush()
         lock_file.seek(0)
         lock_call(lock_file.fileno(), lock_mode, 1)
@@ -128,10 +131,37 @@ def _acquire_process_file_lock(lock_file: Any, lock_path: Path) -> Callable[[], 
     return unlock_msvcrt
 
 
+def _probe_process_file_lock(lock_path: Path | None = None) -> tuple[str | None, str]:
+    """Probe whether the current process-lock backend can actually lock a file."""
+    backend, detail = _process_lock_backend_name()
+    if backend not in ("fcntl", "msvcrt"):
+        return None, detail
+
+    cleanup = False
+    if lock_path is None:
+        lock_path = get_hermes_home() / f".antigravity-lock-probe.{os.getpid()}.{secrets.token_hex(4)}.lock"
+        cleanup = True
+
+    try:
+        with _process_file_lock(lock_path):
+            pass
+        return backend, f"{detail} acquired and released a probe lock"
+    except Exception as exc:
+        return None, f"{detail} detected but lock acquisition failed: {exc}"
+    finally:
+        if cleanup:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+
 @contextlib.contextmanager
 def _process_file_lock(lock_path: Path):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8", opener=_lock_file_opener) as lock_file:
+    with open(lock_path, "a+b", opener=_lock_file_opener) as lock_file:
         try:
             os.chmod(lock_path, 0o600)
         except Exception:

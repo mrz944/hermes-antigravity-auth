@@ -66,17 +66,37 @@ class TestDoctor(unittest.TestCase):
         self.assertTrue(adapter_rows)
         self.assertEqual(adapter_rows[0].status, "FAIL")
 
-    def test_doctor_reports_retry_streaming_limitation(self):
+    def test_doctor_reports_retry_streaming_limitation_as_pass(self):
         from antigravity_auth.doctor import format_doctor_rows, run_doctor
 
-        output = format_doctor_rows(run_doctor())
+        rows = run_doctor()
+        retry_rows = [row for row in rows if row.check == "automatic retry"]
+        self.assertEqual(len(retry_rows), 1)
+        self.assertEqual(retry_rows[0].status, "PASS")
+        self.assertIn("streaming responses cannot be replayed", retry_rows[0].detail)
 
-        self.assertIn("automatic retry", output)
+        output = format_doctor_rows(rows)
+        self.assertIn("PASS automatic retry", output)
         self.assertIn("streaming responses cannot be replayed", output)
 
-    def test_doctor_reports_process_lock_backend(self):
-        from antigravity_auth.doctor import format_doctor_rows, run_doctor
+    def test_doctor_account_store_locking_uses_actual_probe_success(self):
+        from antigravity_auth.doctor import run_doctor
 
-        output = format_doctor_rows(run_doctor())
+        with patch("antigravity_auth.doctor._probe_process_file_lock", return_value=("fcntl", "probe acquired and released")):
+            rows = run_doctor()
 
-        self.assertIn("account store locking", output)
+        lock_rows = [row for row in rows if row.check == "account store locking"]
+        self.assertEqual(len(lock_rows), 1)
+        self.assertEqual(lock_rows[0].status, "PASS")
+        self.assertIn("probe acquired and released", lock_rows[0].detail)
+
+    def test_doctor_account_store_locking_reports_probe_failure(self):
+        from antigravity_auth.doctor import run_doctor
+
+        with patch("antigravity_auth.doctor._probe_process_file_lock", return_value=(None, "lock acquisition failed: denied")):
+            rows = run_doctor()
+
+        lock_rows = [row for row in rows if row.check == "account store locking"]
+        self.assertEqual(len(lock_rows), 1)
+        self.assertEqual(lock_rows[0].status, "WARN")
+        self.assertIn("lock acquisition failed", lock_rows[0].detail)

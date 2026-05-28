@@ -12,7 +12,7 @@ from typing import Any
 
 from .redaction import redact_secret_text, redact_secrets
 from .storage import (
-  _process_lock_backend_name,
+  _probe_process_file_lock,
   get_accounts_json_path,
   get_auth_json_path,
   get_hermes_home,
@@ -107,7 +107,7 @@ def _check_retry_behavior() -> DoctorRow:
     from . import interceptor
     if hasattr(interceptor, "_send_with_antigravity_retry") and hasattr(interceptor, "_clone_request_for_retry"):
       return _row(
-        "WARN",
+        "PASS",
         "automatic retry",
         "enabled for replayable non-streaming 401/403/429 responses; streaming responses cannot be replayed automatically",
         "If a streaming request fails after token refresh or account rotation, retry the user request manually.",
@@ -123,13 +123,13 @@ def _check_retry_behavior() -> DoctorRow:
 
 
 def _check_account_store_locking() -> DoctorRow:
-  backend, detail = _process_lock_backend_name()
+  backend, detail = _probe_process_file_lock()
   if backend in ("fcntl", "msvcrt"):
-    return _row("PASS", "account store locking", f"transactional updates use {detail}")
+    return _row("PASS", "account store locking", detail)
   return _row(
     "WARN",
     "account store locking",
-    "no inter-process file locking backend is available; transactional updates are only thread-safe inside this process",
+    detail or "no inter-process file locking backend is available; transactional updates are only thread-safe inside this process",
     "Run one Hermes Antigravity process at a time or use a Python/platform with fcntl.flock or msvcrt.locking support.",
   )
 

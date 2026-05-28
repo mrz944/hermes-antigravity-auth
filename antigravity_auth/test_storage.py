@@ -114,6 +114,66 @@ class TestStorage(unittest.TestCase):
 
         self.assertEqual(calls, [(fake_msvcrt.LK_LOCK, 1), (fake_msvcrt.LK_UNLCK, 1)])
 
+    def test_process_lock_opens_lock_file_in_binary_mode_for_msvcrt(self):
+        from antigravity_auth import storage
+
+        modes = []
+        fake_msvcrt = types.SimpleNamespace(
+            LK_LOCK=7,
+            LK_UNLCK=8,
+            locking=lambda fd, mode, nbytes: None,
+        )
+        original_import = builtins.__import__
+        original_open = builtins.open
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ImportError("no fcntl in this test")
+            return original_import(name, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "store.lock"
+
+            def tracking_open(file, mode="r", *args, **kwargs):
+                if Path(file) == lock_path:
+                    modes.append(mode)
+                return original_open(file, mode, *args, **kwargs)
+
+            with patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
+                with patch("builtins.__import__", side_effect=fake_import):
+                    with patch("builtins.open", side_effect=tracking_open):
+                        with storage._process_file_lock(lock_path):
+                            pass
+
+        self.assertTrue(modes)
+        self.assertIn("b", modes[0])
+
+    def test_probe_process_file_lock_acquires_and_releases_available_backend(self):
+        from antigravity_auth import storage
+
+        calls = []
+        fake_msvcrt = types.SimpleNamespace(
+            LK_LOCK=7,
+            LK_UNLCK=8,
+            locking=lambda fd, mode, nbytes: calls.append((mode, nbytes)),
+        )
+        original_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ImportError("no fcntl in this test")
+            return original_import(name, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "probe.lock"
+            with patch.dict(sys.modules, {"msvcrt": fake_msvcrt}):
+                with patch("builtins.__import__", side_effect=fake_import):
+                    backend, detail = storage._probe_process_file_lock(lock_path)
+
+        self.assertEqual(backend, "msvcrt")
+        self.assertIn("acquired and released", detail)
+        self.assertEqual(calls, [(fake_msvcrt.LK_LOCK, 1), (fake_msvcrt.LK_UNLCK, 1)])
+
     def test_process_lock_warns_once_when_no_process_backend_is_available(self):
         from antigravity_auth import storage
 

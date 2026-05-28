@@ -830,6 +830,29 @@ class TestRetryWrapper(unittest.TestCase):
         self.assertTrue(calls[1].extensions["antigravity_retry_attempted"])
         self.assertEqual(calls[1].extensions["antigravity_retry_original_status"], 401)
 
+    def test_headers_for_retry_removes_stale_auth_fingerprint_and_antigravity_headers(self):
+        from antigravity_auth.interceptor import _headers_for_retry
+
+        req = self._make_request()
+        req.headers["Authorization"] = "Bearer stale-access-token"
+        req.headers["Client-Metadata"] = "stale-fingerprint"
+        req.headers["User-Agent"] = "stale-antigravity-ua"
+        req.headers["X-Goog-Api-Client"] = "stale-client"
+        req.headers["Antigravity-Device"] = "stale-device"
+        req.headers["X-Antigravity-Device"] = "stale-x-device"
+        req.headers["X-Other"] = "keep"
+
+        headers = _headers_for_retry(req)
+
+        self.assertNotIn("authorization", headers)
+        self.assertNotIn("client-metadata", headers)
+        self.assertNotIn("user-agent", headers)
+        self.assertNotIn("x-goog-api-client", headers)
+        self.assertNotIn("antigravity-device", headers)
+        self.assertNotIn("x-antigravity-device", headers)
+        self.assertEqual(headers.get("x-other"), "keep")
+        self.assertEqual(headers.get("content-type"), "application/json")
+
     def test_send_wrapper_retry_does_not_reuse_stale_auth_or_fingerprint_headers(self):
         from antigravity_auth.interceptor import _send_with_antigravity_retry
 
