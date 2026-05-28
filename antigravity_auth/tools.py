@@ -26,16 +26,12 @@ def register_tools() -> None:
 
 def _register_search_tool(registry: Any) -> None:
     """Register execute_search as google_antigravity_search."""
-    from .search import execute_search, SearchArgs
+    from .search import execute_search, SearchArgs, filter_search_urls
     from .storage import load_accounts, resolve_active_account_index
 
     def _search_handler(args: dict, **kw: Any) -> str:
         query = str(args.get("query", ""))
-        urls: list[str] | None = args.get("urls")
-        if isinstance(urls, str):
-            urls = [str(urls)]
-        elif not isinstance(urls, list):
-            urls = None
+        urls = filter_search_urls(args.get("urls")) or None
 
         accounts_data = load_accounts()
         accounts = accounts_data.get("accounts", [])

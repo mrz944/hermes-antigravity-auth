@@ -214,6 +214,15 @@ def _extract_usage_from_sse_payload(body: str) -> dict[str, Any] | None:
       if usage:
         return usage
       current_data = []
+  if current_data:
+    data_str = "".join(current_data)
+    try:
+      parsed = json.loads(data_str)
+    except json.JSONDecodeError:
+      return None
+    usage = _extract_parsed_usage(parsed)
+    if usage:
+      return usage
   return None
 
 

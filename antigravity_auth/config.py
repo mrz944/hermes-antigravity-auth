@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -115,15 +115,27 @@ def load_config_from_dict(data: dict[str, Any]) -> Config:
       kwargs[field_name] = data[field_name]
 
   if "signature_cache" in data and isinstance(data["signature_cache"], dict):
-    kwargs["signature_cache"] = SignatureCacheConfig(**data["signature_cache"])
+    kwargs["signature_cache"] = SignatureCacheConfig(
+      **_known_dataclass_kwargs(SignatureCacheConfig, data["signature_cache"])
+    )
 
   if "health_score" in data and isinstance(data["health_score"], dict):
-    kwargs["health_score"] = HealthScoreConfig(**data["health_score"])
+    kwargs["health_score"] = HealthScoreConfig(
+      **_known_dataclass_kwargs(HealthScoreConfig, data["health_score"])
+    )
 
   if "token_bucket" in data and isinstance(data["token_bucket"], dict):
-    kwargs["token_bucket"] = TokenBucketConfig(**data["token_bucket"])
+    kwargs["token_bucket"] = TokenBucketConfig(
+      **_known_dataclass_kwargs(TokenBucketConfig, data["token_bucket"])
+    )
 
   return Config(**kwargs)
+
+
+def _known_dataclass_kwargs(cls: type[Any], values: dict[str, Any]) -> dict[str, Any]:
+  """Filter a dict to keyword arguments accepted by a config dataclass."""
+  allowed = {field_info.name for field_info in fields(cls)}
+  return {key: value for key, value in values.items() if key in allowed}
 
 
 def _extract_config_data(data: dict[str, Any]) -> dict[str, Any]:

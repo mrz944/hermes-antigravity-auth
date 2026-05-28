@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 import urllib.request
@@ -121,6 +122,7 @@ def _notify_update(installed: str, latest: str) -> None:
     print(
         f"\n[antigravity] Update available: v{installed} → v{latest}\n"
         f"  Run: pip install --upgrade git+https://github.com/Reedtrullz/hermes-antigravity-auth.git\n",
+        file=sys.stderr,
         flush=True,
     )
 

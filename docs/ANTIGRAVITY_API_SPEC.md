@@ -311,40 +311,42 @@ The underlying API uses these tool formats:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `type` | ✅ Supported | `object`, `string`, `number`, `integer`, `boolean`, `array` |
+| `type` | ✅ Supported | `object`, `string`, `number`, `integer`, `boolean`, `array`; nullable type arrays are flattened by sanitizer helpers |
 | `properties` | ✅ Supported | Object properties |
-| `required` | ✅ Supported | Required fields array |
-| `description` | ✅ Supported | Field descriptions |
+| `required` | ✅ Supported | Required fields array; entries not present in `properties` are removed by sanitizer helpers |
+| `description` | ✅ Supported | Field descriptions; unsupported constraints are preserved here as hints when possible |
 | `enum` | ✅ Supported | Enumerated values |
 | `items` | ✅ Supported | Array item schema |
-| `anyOf` | ✅ Supported | Converted to `any_of` internally |
-| `allOf` | ✅ Supported | Converted to `all_of` internally |
-| `oneOf` | ✅ Supported | Converted to `one_of` internally |
-| `additionalProperties` | ✅ Supported | Additional properties schema |
-| `const` | ❌ NOT Supported | Use `enum: [value]` instead |
-| `$ref` | ❌ NOT Supported | Inline the schema instead |
-| `$defs` / `definitions` | ❌ NOT Supported | Inline definitions instead |
+| `anyOf` | ⚠️ Sanitized | Flattened to a compatible branch or enum and removed; not passed through as `anyOf` |
+| `allOf` | ⚠️ Sanitized | Merged into one schema and removed; not passed through as `allOf` |
+| `oneOf` | ⚠️ Sanitized | Flattened to a compatible branch or enum and removed; not passed through as `oneOf` |
+| `additionalProperties` | ❌ NOT Supported | Removed; `false` is converted to a description hint before removal |
+| `const` | ❌ NOT Supported | Converted to `enum: [value]` by the sanitizer |
+| `$ref` | ❌ NOT Supported | Converted to a description hint; inline concrete fields when possible |
+| `$defs` / `definitions` | ❌ NOT Supported | Removed after `$ref` hints are extracted |
 | `$schema` | ❌ NOT Supported | Strip from schema |
 | `$id` | ❌ NOT Supported | Strip from schema |
-| `default` | ❌ NOT Supported | Strip from schema |
-| `examples` | ❌ NOT Supported | Strip from schema |
-| `title` (nested) | ⚠️ Caution | May cause issues in nested objects |
+| `default` | ❌ NOT Supported by sanitizer | Moved to description hints/removed for API compatibility |
+| `examples` | ❌ NOT Supported by sanitizer | Moved to description hints/removed for API compatibility |
+| `title` | ❌ NOT Supported by sanitizer | Removed |
 
-**⚠️ IMPORTANT:** The following features will cause a 400 error if sent to the API:
-- `const` - Convert to `enum: [value]` instead
-- `$ref` / `$defs` - Inline the schema definitions
-- `$schema` / `$id` - Strip these metadata fields
-- `default` / `examples` - Strip these documentation fields
+**⚠️ IMPORTANT:** Unsupported JSON Schema features can cause a 400 error if sent directly to the API. The compatibility sanitizer in `antigravity_auth/transform/schema.py`:
+- converts `const` to single-value `enum`
+- converts `$ref` to description hints and removes `$defs` / `definitions`
+- flattens or merges `anyOf`, `oneOf`, and `allOf` before removing those keywords
+- moves constraints such as `minLength`, `maxLength`, `pattern`, `default`, and `examples` into descriptions where possible, then removes unsupported keys
+- removes `additionalProperties` (adding a "No extra properties allowed" description hint when it is `false`)
+- adds a required `_placeholder` boolean for empty object schemas
 
 ```json
-// ❌ WRONG - Will return 400 error
+// ❌ WRONG - Will return 400 error if sent unsanitized
 { "type": { "const": "email" } }
 
-// ✅ CORRECT - Use enum instead
+// ✅ CORRECT - Sanitizer-compatible shape
 { "type": { "enum": ["email"] } }
 ```
 
-**Note:** The plugin automatically handles these conversions via `antigravity_auth/transform/schema.py`.
+**Runtime note:** The Cloud Code request wrapper in `interceptor._apply_claude_transforms` currently only applies Claude runtime fixes (VALIDATED mode, thinking key normalization, tool-call IDs elsewhere, and the empty-object `_placeholder`). It does **not** run the full schema sanitizer unless the request path has already called `clean_json_schema()` / `to_gemini_schema()` from the transform utilities.
 
 ---
 

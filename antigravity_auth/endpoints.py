@@ -1,4 +1,9 @@
-"""Antigravity API endpoint fallback chain (daily → autopush → prod)."""
+"""Antigravity API endpoint helpers.
+
+select_endpoint() currently pins production. EndpointProvider still records failed
+endpoints for diagnostics, but failed-endpoint tracking is a no-op for selection
+until the fallback chain is re-enabled.
+"""
 from __future__ import annotations
 
 import time
@@ -10,12 +15,12 @@ _FAILURE_TTL_SECONDS = 300
 
 
 class EndpointProvider:
-  """Manages the Antigravity API endpoint fallback chain.
+  """Stores Antigravity API endpoint fallback-chain state.
 
-  Endpoints are tried in order: daily → autopush → prod.
-  For Gemini CLI header style (DEPRECATED — sunsets 2026-06-18),
-  sandbox endpoints (daily, autopush) are skipped since they only
-  work with Antigravity quota.
+  The provider can compute daily → autopush → prod order and record temporary
+  endpoint failures, but module-level select_endpoint() currently pins prod so
+  these failure marks are diagnostic/no-op for request routing until fallback is
+  re-enabled.
   """
 
   def __init__(self) -> None:
@@ -32,7 +37,7 @@ class EndpointProvider:
     return list(ANTIGRAVITY_ENDPOINT_FALLBACKS)
 
   def mark_failed(self, endpoint: str) -> None:
-    """Mark an endpoint as failed so it is skipped in future attempts."""
+    """Record an endpoint failure for diagnostics/future fallback routing."""
     self._failed_endpoints[endpoint] = time.time()
 
   def is_failed(self, endpoint: str) -> bool:
@@ -65,14 +70,15 @@ _endpoint_provider = EndpointProvider()
 
 
 def select_endpoint(config=None):
-    """Select the Antigravity endpoint based on config and health state.
+    """Return the production Antigravity endpoint.
 
-    Uses the EndpointProvider's fallback chain (daily → autopush → prod).
-    For ``gemini-cli`` header style, only production is returned.
-    Failed endpoints are skipped automatically.
+    The fallback chain (daily → autopush → prod) is currently disabled because
+    daily sandbox rejects free-tier accounts for Claude. Failed-endpoint tracking
+    remains diagnostic only and does not affect selection until fallback is
+    re-enabled.
 
     Args:
-        config: Optional Config dataclass instance.
+        config: Optional Config dataclass instance (currently unused).
     """
     from .constants import ANTIGRAVITY_ENDPOINT_PROD
 
@@ -81,7 +87,7 @@ def select_endpoint(config=None):
 
 
 def mark_endpoint_failed(endpoint: str) -> None:
-    """Mark an endpoint as failed so it is skipped in future requests."""
+    """Record endpoint failure diagnostics (selection currently ignores this)."""
     _endpoint_provider.mark_failed(endpoint)
 
 

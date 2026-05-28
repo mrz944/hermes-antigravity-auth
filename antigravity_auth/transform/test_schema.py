@@ -764,6 +764,18 @@ class TestToGeminiSchema(unittest.TestCase):
     result = to_gemini_schema(schema)
     self.assertEqual(result["type"], "OBJECT")
 
+  def test_nullable_string_type_array(self):
+    schema = {"type": ["string", "null"]}
+    result = to_gemini_schema(schema)
+    self.assertEqual(result["type"], "STRING")
+    self.assertIs(result["nullable"], True)
+
+  def test_nullable_integer_type_array(self):
+    schema = {"type": ["integer", "null"]}
+    result = to_gemini_schema(schema)
+    self.assertEqual(result["type"], "INTEGER")
+    self.assertIs(result["nullable"], True)
+
   def test_unsupported_fields_removed(self):
     schema = {"type": "object", "additionalProperties": False, "$schema": "http://..."}
     result = to_gemini_schema(schema)

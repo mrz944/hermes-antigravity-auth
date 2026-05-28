@@ -357,13 +357,17 @@ def _apply_claude_transforms(inner_request: dict) -> None:
         required = params.get("required")
         if not isinstance(required, list) or len(required) == 0:
           props = params.get("properties")
-          if isinstance(props, dict):
-            # Add a _placeholder boolean property to satisfy VALIDATED mode
-            props["_placeholder"] = {
-              "type": "boolean",
-              "description": "Placeholder. Always pass true.",
-            }
-            params["required"] = ["_placeholder"]
+          if not isinstance(props, dict):
+            if params.get("type") != "object":
+              continue
+            props = {}
+            params["properties"] = props
+          # Add a _placeholder boolean property to satisfy VALIDATED mode
+          props["_placeholder"] = {
+            "type": "boolean",
+            "description": "Placeholder. Always pass true.",
+          }
+          params["required"] = ["_placeholder"]
 
 
 def _antigravity_request_hook(request: httpx.Request) -> None:

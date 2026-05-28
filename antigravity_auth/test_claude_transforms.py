@@ -91,6 +91,19 @@ class TestApplyClaudeTransforms(unittest.TestCase):
     params = req["tools"][0]["functionDeclarations"][0]["parameters"]
     self.assertEqual(params["required"], ["_placeholder"])
 
+  def test_adds_placeholder_for_truly_empty_object_schema(self):
+    req = self._make_request(tools=[{"functionDeclarations": [{
+      "name": "noop",
+      "parameters": {"type": "object"},
+    }]}])
+    _apply_claude_transforms(req)
+    params = req["tools"][0]["functionDeclarations"][0]["parameters"]
+    self.assertEqual(params["required"], ["_placeholder"])
+    self.assertEqual(
+      params["properties"]["_placeholder"],
+      {"type": "boolean", "description": "Placeholder. Always pass true."},
+    )
+
   def test_preserves_existing_required(self):
     req = self._make_request(tools=[{"functionDeclarations": [{
       "name": "read_file",

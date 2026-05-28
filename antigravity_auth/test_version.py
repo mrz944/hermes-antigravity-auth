@@ -1,9 +1,13 @@
 """Tests for antigravity_auth.version."""
+import io
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+
 from antigravity_auth.version import (
     _parse_github_tag,
     _version_newer,
     _get_installed_version,
+    _notify_update,
 )
 
 
@@ -47,3 +51,14 @@ class TestGetInstalledVersion(unittest.TestCase):
         self.assertIsInstance(v, str)
         self.assertNotEqual(v, "0.0.0")
         self.assertRegex(v, r"^\d+\.\d+\.\d+")
+
+
+class TestNotifyUpdate(unittest.TestCase):
+    def test_prints_to_stderr_not_stdout(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            _notify_update("1.0.0", "1.1.0")
+
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Update available", stderr.getvalue())

@@ -150,6 +150,33 @@ class TestLoadConfigFromDict(unittest.TestCase):
         self.assertEqual(config.token_bucket.max_tokens, 100)
         self.assertEqual(config.token_bucket.regeneration_rate_per_minute, 10.0)
 
+    def test_nested_unknown_keys_are_ignored(self):
+        config = load_config_from_dict({
+            "debug": True,
+            "signature_cache": {
+                "enabled": False,
+                "memory_ttl_seconds": 500,
+                "future_key": "ignored",
+            },
+            "health_score": {
+                "initial": 61,
+                "failure_penalty": -33,
+                "future_key": "ignored",
+            },
+            "token_bucket": {
+                "max_tokens": 100,
+                "regeneration_rate_per_minute": 10.0,
+                "future_key": "ignored",
+            },
+        })
+        self.assertTrue(config.debug)
+        self.assertFalse(config.signature_cache.enabled)
+        self.assertEqual(config.signature_cache.memory_ttl_seconds, 500)
+        self.assertEqual(config.health_score.initial, 61)
+        self.assertEqual(config.health_score.failure_penalty, -33)
+        self.assertEqual(config.token_bucket.max_tokens, 100)
+        self.assertEqual(config.token_bucket.regeneration_rate_per_minute, 10.0)
+
     def test_soft_quota_cache_ttl_as_int(self):
         config = load_config_from_dict({"soft_quota_cache_ttl_minutes": 30})
         self.assertEqual(config.soft_quota_cache_ttl_minutes, 30)

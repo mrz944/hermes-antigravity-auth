@@ -105,6 +105,25 @@ def get_session_id() -> str:
   return f"{_session_prefix}-{_session_counter}"
 
 
+def filter_search_urls(urls: Any) -> list[str]:
+  """Return non-empty string URLs, ignoring malformed list members."""
+  if isinstance(urls, str):
+    candidates = [urls]
+  elif isinstance(urls, list):
+    candidates = urls
+  else:
+    return []
+
+  filtered: list[str] = []
+  for url in candidates:
+    if not isinstance(url, str):
+      continue
+    stripped = url.strip()
+    if stripped:
+      filtered.append(stripped)
+  return filtered
+
+
 def format_search_result(result: SearchResult) -> str:
   lines: list[str] = []
 
@@ -225,7 +244,7 @@ def execute_search(
   timeout_ms: int = 60000,
 ) -> str:
   query = args.query
-  urls = args.urls or []
+  urls = filter_search_urls(args.urls)
 
   prompt = query
   if urls:

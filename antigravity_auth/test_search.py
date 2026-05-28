@@ -1,7 +1,11 @@
+import json
 import unittest
+from typing import Any
 
 from antigravity_auth.search import (
     SearchResult,
+    SearchArgs,
+    execute_search,
     generate_request_id,
     format_search_result,
     parse_search_response,
@@ -304,7 +308,80 @@ class TestParseSearchResponse(unittest.TestCase):
         self.assertEqual(result.sources[0]["url"], "https://valid.com")
 
 
+class TestExecuteSearch(unittest.TestCase):
+    def test_malformed_url_entries_are_ignored_before_request(self):
+        from unittest.mock import patch
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "response": {
+                        "candidates": [
+                            {"content": {"parts": [{"text": "ok"}]}}
+                        ]
+                    }
+                }).encode("utf-8")
+
+        malformed_urls: list[Any] = [123, "", "https://ok"]
+        with patch("antigravity_auth.search.urllib.request.urlopen", return_value=FakeResponse()) as urlopen_mock:
+            output = execute_search(
+                SearchArgs(query="check this", urls=malformed_urls),
+                "access-token",
+                "project-id",
+                timeout_ms=1000,
+            )
+
+        self.assertIn("ok", output)
+        request = urlopen_mock.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        prompt = payload["request"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("https://ok", prompt)
+        self.assertNotIn("123", prompt)
+        self.assertIn({"urlContext": {}}, payload["request"]["tools"])
+
+
 class TestSearchToolRegistration(unittest.TestCase):
+    def test_search_handler_filters_non_string_urls(self):
+        from unittest.mock import patch
+
+        from antigravity_auth.tools import _register_search_tool
+
+        class FakeRegistry:
+            def register(self, **kwargs):
+                self.kwargs = kwargs
+
+        registry = FakeRegistry()
+        accounts_data = {
+            "activeIndex": 0,
+            "accounts": [
+                {
+                    "email": "user@example.com",
+                    "refreshToken": "refresh",
+                    "projectId": "proj",
+                },
+            ],
+        }
+        with (
+            patch("antigravity_auth.storage.load_accounts", return_value=accounts_data),
+            patch("antigravity_auth.token.refresh_access_token", return_value={"access": "access"}),
+            patch("antigravity_auth.search.execute_search", return_value="searched") as search_mock,
+        ):
+            _register_search_tool(registry)
+            output = registry.kwargs["handler"]({
+                "query": "hello",
+                "urls": [123, "", "https://ok"],
+            })
+
+        self.assertEqual(output, "searched")
+        search_args = search_mock.call_args.args[0]
+        self.assertEqual(search_args.urls, ["https://ok"])
+
     def test_search_handler_falls_back_to_first_account_when_active_index_is_stale(self):
         from unittest.mock import patch
 

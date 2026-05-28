@@ -472,6 +472,18 @@ class TestTransformAntigravityResponse(unittest.TestCase):
         self.assertIn("x-antigravity-total-token-count", extra_headers)
         self.assertEqual(extra_headers["x-antigravity-total-token-count"], "42")
 
+    def test_sse_with_usage_extraction_without_trailing_blank_line(self):
+        """Extracts usage from a final SSE event even without a blank-line terminator."""
+        sse_body = 'data: {"response": {"usageMetadata": {"totalTokenCount": 43}}}'
+        body, extra_headers, error = transform_antigravity_response(
+            sse_body, streaming=True,
+            headers={"content-type": "text/event-stream"},
+        )
+        self.assertEqual(body, sse_body)
+        self.assertIsNone(error)
+        assert extra_headers is not None
+        self.assertEqual(extra_headers["x-antigravity-total-token-count"], "43")
+
     def test_successful_response_transformed(self):
         """Transforms successful JSON response with thinking parts."""
         response_body = json.dumps({

@@ -673,6 +673,17 @@ def to_gemini_schema(schema) -> dict:
     if key == "type" and isinstance(value, str):
       # Convert type to uppercase for Gemini API
       result[key] = value.upper()
+    elif key == "type" and isinstance(value, list):
+      # Gemini rejects JSON Schema type arrays. Flatten nullable unions
+      # directly here so callers of to_gemini_schema() do not have to run
+      # clean_json_schema() first.
+      type_values = [item for item in value if isinstance(item, str)]
+      has_null = "null" in type_values
+      non_null_types = [item for item in type_values if item != "null"]
+      first_type = non_null_types[0] if non_null_types else "string"
+      result[key] = first_type.upper()
+      if has_null:
+        result["nullable"] = True
     elif key == "properties" and isinstance(value, dict):
       # Recursively transform nested property schemas
       result[key] = {k: to_gemini_schema(v) for k, v in value.items()}
