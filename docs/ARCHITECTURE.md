@@ -64,8 +64,10 @@ The Python package is the source of truth. The plugin directories are thin Herme
 
 OAuth client credentials are not assumed to be bundled in source/git installs.
 They must be supplied by `ANTIGRAVITY_CLIENT_ID` /
-`ANTIGRAVITY_CLIENT_SECRET`, or by a local gitignored
-`antigravity_auth/_credentials.py` in an editable checkout.
+`ANTIGRAVITY_CLIENT_SECRET`, or by the external Hermes credentials file
+`~/.hermes/antigravity-credentials.json`. The package-tree
+`antigravity_auth/_credentials.py` path is legacy reference only and is not the
+recommended credential location.
 
 ---
 

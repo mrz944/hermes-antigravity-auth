@@ -58,23 +58,30 @@ pip install -e .
 ### 2. Provide OAuth client credentials
 
 Source/git installs do not include private OAuth client credentials. Before
-running `hermes antigravity login`, provide your own Google OAuth desktop-client
-values via environment variables:
+running `hermes antigravity login`, create a Google OAuth desktop client with
+authorized redirect URI `http://localhost:51121/oauth-callback`, then provide
+its values via environment variables:
 
 ```bash
 export ANTIGRAVITY_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 export ANTIGRAVITY_CLIENT_SECRET="your-client-secret"
 ```
 
-For an editable checkout, you may instead create a local gitignored credentials
-file:
+Or use an external Hermes credentials file outside the Python package tree:
 
 ```bash
-cp antigravity_auth/_credentials.py.example antigravity_auth/_credentials.py
-$EDITOR antigravity_auth/_credentials.py
+mkdir -p ~/.hermes
+cat > ~/.hermes/antigravity-credentials.json <<'JSON'
+{
+  "client_id": "your-client-id.apps.googleusercontent.com",
+  "client_secret": "your-client-secret"
+}
+JSON
+chmod 600 ~/.hermes/antigravity-credentials.json
 ```
 
-Do not commit credentials or paste real secrets into issue reports.
+Do not place real credentials in `antigravity_auth/_credentials.py`; local files
+inside the package tree are refused by package builds to prevent wheel/sdist leaks.
 
 ### 3. Install the Hermes plugins
 
@@ -144,15 +151,16 @@ In `hermes model` and the in-agent `/model` picker, Antigravity appears as
    pip install git+https://github.com/Reedtrullz/hermes-antigravity-auth.git
    ```
 
-2. Provide OAuth client credentials before login. Prefer environment variables
-   for non-editable installs:
+2. Provide OAuth client credentials before login. Create a Google OAuth desktop
+   client with authorized redirect URI
+   `http://localhost:51121/oauth-callback`, then prefer environment variables:
    ```bash
    export ANTIGRAVITY_CLIENT_ID="your-client-id.apps.googleusercontent.com"
    export ANTIGRAVITY_CLIENT_SECRET="your-client-secret"
    ```
-   For an editable checkout, `antigravity_auth/_credentials.py` is also
-   supported. Copy `antigravity_auth/_credentials.py.example` and fill it in
-   locally; never commit it.
+   Or use an external `~/.hermes/antigravity-credentials.json` file outside the
+   Python package tree. Do not place real credentials in
+   `antigravity_auth/_credentials.py`.
 
 3. Install the Hermes plugin wrappers:
    ```bash
@@ -344,9 +352,10 @@ Controls which account is picked from the multi-account pool.
 | `HERMES_ANTIGRAVITY_DEBUG_TUI=1` | Enable debug output in Hermes UI integrations |
 
 > OAuth credentials are loaded from `ANTIGRAVITY_CLIENT_ID` /
-> `ANTIGRAVITY_CLIENT_SECRET` first, or from a local gitignored
-> `antigravity_auth/_credentials.py` in an editable checkout. Source/git installs
-> should assume credentials are not bundled.
+> `ANTIGRAVITY_CLIENT_SECRET` first, or from external
+> `~/.hermes/antigravity-credentials.json`. `antigravity_auth/_credentials.py`
+> is legacy reference only and is not recommended; package-tree credential files
+> are refused by package builds.
 
 ---
 
