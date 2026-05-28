@@ -1,5 +1,6 @@
 import time
 import unittest
+from unittest.mock import patch
 
 from antigravity_auth.accounts.ratelimit import (
     get_quota_key,
@@ -12,6 +13,7 @@ from antigravity_auth.accounts.ratelimit import (
     is_account_cooling_down,
     mark_rate_limited,
     mark_rate_limited_with_reason,
+    RateLimitTracker,
 )
 from antigravity_auth.accounts.state import (
     ManagedAccount,
@@ -599,6 +601,31 @@ class TestMarking(unittest.TestCase):
             RATE_LIMIT_REASON_QUOTA_EXHAUSTED,
         )
         self.assertEqual(self.account.consecutive_failures, 4)
+
+
+class TestRateLimitTracker(unittest.TestCase):
+    def test_dedup_window_prunes_expired_keys(self):
+        tracker = RateLimitTracker()
+
+        with patch("antigravity_auth.accounts.ratelimit.now_ms", return_value=1_000):
+            for index in range(5):
+                self.assertFalse(tracker.is_duplicate(index, "gemini-antigravity"))
+            self.assertEqual(len(tracker._dedup_window), 5)
+
+        with patch("antigravity_auth.accounts.ratelimit.now_ms", return_value=7_001):
+            self.assertFalse(tracker.is_duplicate(99, "gemini-antigravity"))
+
+        self.assertEqual(tracker._dedup_window, {"99:gemini-antigravity": 7_001})
+
+    def test_dedup_window_keeps_recent_key_as_duplicate(self):
+        tracker = RateLimitTracker()
+
+        with patch("antigravity_auth.accounts.ratelimit.now_ms", return_value=1_000):
+            self.assertFalse(tracker.is_duplicate(0, "claude"))
+
+        with patch("antigravity_auth.accounts.ratelimit.now_ms", return_value=5_999):
+            self.assertTrue(tracker.is_duplicate(0, "claude"))
+            self.assertEqual(tracker._dedup_window["0:claude"], 1_000)
 
 
 if __name__ == "__main__":

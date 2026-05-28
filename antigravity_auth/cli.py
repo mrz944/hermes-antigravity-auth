@@ -22,11 +22,13 @@ if __package__ in (None, ""):
     __package__ = "antigravity_auth"
 
 import http.server
+import html
 import socketserver
 import threading
 import time
 import webbrowser
 from urllib.parse import parse_qs, urlparse
+from typing import cast
 
 from .auth_sync import sync_token_to_all_auth_stores, sync_token_to_google_oauth
 from .oauth import authorize_antigravity, exchange_antigravity
@@ -37,37 +39,24 @@ from .token import format_refresh_parts, parse_refresh_parts
 class ThreadSafeHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    expected_state: str | None = None
+    callback_code: str | None = None
+    callback_state: str | None = None
+    callback_error: str | None = None
 
 
-class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
-
-    def log_message(self, format_string, *args):
-        pass
-
-    def do_GET(self):
-        parsed_url = urlparse(self.path)
-        query_params = parse_qs(parsed_url.query)
-
-        code_list = query_params.get("code")
-        state_list = query_params.get("state")
-
-        code = code_list[0] if code_list else None
-        state = state_list[0] if state_list else None
-
-        self.server.callback_code = code
-        self.server.callback_state = state
-
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-
-        html_response = """
+def _callback_html(title: str, heading: str, message: str, success: bool) -> bytes:
+    badge_text = "Success" if success else "Action Required"
+    heading_color = "#10b981" if success else "#dc2626"
+    badge_bg = "#d1fae5" if success else "#fee2e2"
+    badge_color = "#065f46" if success else "#991b1b"
+    return f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Hermes Authentication Success</title>
+    <title>{html.escape(title)}</title>
     <style>
-        body {
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background-color: #f3f4f6;
             color: #1f2937;
@@ -76,8 +65,8 @@ class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
             align-items: center;
             height: 100vh;
             margin: 0;
-        }
-        .card {
+        }}
+        .card {{
             background: white;
             padding: 2.5rem;
             border-radius: 12px;
@@ -85,47 +74,124 @@ class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
             text-align: center;
             max-width: 400px;
             width: 90%;
-        }
-        h1 {
-            color: #10b981;
+        }}
+        h1 {{
+            color: {heading_color};
             margin-top: 0;
             font-size: 1.75rem;
-        }
-        p {
+        }}
+        p {{
             color: #4b5563;
             line-height: 1.5;
             margin-bottom: 1.5rem;
-        }
-        .badge {
+        }}
+        .badge {{
             display: inline-block;
-            background-color: #d1fae5;
-            color: #065f46;
+            background-color: {badge_bg};
+            color: {badge_color};
             padding: 0.25rem 0.75rem;
             border-radius: 9999px;
             font-size: 0.875rem;
             font-weight: 500;
-        }
+        }}
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>Authentication Success</h1>
-        <p>Google Antigravity has been successfully authorized for Hermes. You can now close this tab and return to your terminal.</p>
-        <div class="badge">Success</div>
+        <h1>{html.escape(heading)}</h1>
+        <p>{html.escape(message)}</p>
+        <div class="badge">{badge_text}</div>
     </div>
 </body>
 </html>
-        """
-        self.wfile.write(html_response.encode("utf-8"))
+    """.encode("utf-8")
 
+
+class OAuthCallbackHandler(http.server.BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        pass
+
+    def _write_html(self, status: int, title: str, heading: str, message: str, success: bool) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(_callback_html(title, heading, message, success))
+
+    def _shutdown_soon(self) -> None:
         def shutdown_server():
             time.sleep(1)
             self.server.shutdown()
 
         threading.Thread(target=shutdown_server, daemon=True).start()
 
+    def do_GET(self):
+        parsed_url = urlparse(self.path)
+        query_params = parse_qs(parsed_url.query)
 
-def run_callback_server(port: int = 51121, timeout: int = 60) -> tuple[str | None, str | None]:
+        code_list = query_params.get("code")
+        state_list = query_params.get("state")
+        error_list = query_params.get("error")
+        description_list = query_params.get("error_description")
+
+        code = code_list[0] if code_list else None
+        state = state_list[0] if state_list else None
+        error_value = error_list[0] if error_list else None
+        server = cast(ThreadSafeHTTPServer, self.server)
+        expected_state = server.expected_state
+
+        if expected_state and state != expected_state:
+            self._write_html(
+                400,
+                "Hermes Authentication Failed",
+                "State Mismatch",
+                "The OAuth callback state did not match the login session. Return to your terminal and keep waiting for the correct callback.",
+                False,
+            )
+            return
+
+        if error_value:
+            server.callback_error = error_value
+            server.callback_state = state
+            description = description_list[0] if description_list else error_value
+            self._write_html(
+                400,
+                "Hermes Authentication Failed",
+                "Authentication Failed",
+                f"Google returned an OAuth error: {description}",
+                False,
+            )
+            self._shutdown_soon()
+            return
+
+        if not code:
+            self._write_html(
+                400,
+                "Hermes Authentication Failed",
+                "Missing Authorization Code",
+                "The OAuth callback did not include an authorization code.",
+                False,
+            )
+            return
+
+        server.callback_code = code
+        server.callback_state = state
+
+        self._write_html(
+            200,
+            "Hermes Authentication Success",
+            "Authentication Success",
+            "Google Antigravity has been successfully authorized for Hermes. You can now close this tab and return to your terminal.",
+            True,
+        )
+        self._shutdown_soon()
+
+
+def run_callback_server(
+    port: int = 51121,
+    timeout: int = 60,
+    expected_state: str | None = None,
+) -> tuple[str | None, str | None]:
     server = None
     try:
         server = ThreadSafeHTTPServer(("127.0.0.1", port), OAuthCallbackHandler)
@@ -135,19 +201,24 @@ def run_callback_server(port: int = 51121, timeout: int = 60) -> tuple[str | Non
 
     server.callback_code = None
     server.callback_state = None
+    server.callback_error = None
+    server.expected_state = expected_state
 
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
     start_time = time.time()
     while time.time() - start_time < timeout:
-        if server.callback_code is not None:
+        if server.callback_code is not None or server.callback_error is not None:
             break
         time.sleep(0.5)
 
     server.shutdown()
     server.server_close()
     server_thread.join()
+
+    if server.callback_error:
+        print(f"OAuth callback failed: {server.callback_error}", file=sys.stderr)
 
     return server.callback_code, server.callback_state
 
@@ -169,7 +240,11 @@ def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
         try:
             webbrowser.open(auth_url)
             print("Waiting for callback on http://localhost:51121/...")
-            code, state = run_callback_server(port=51121, timeout=60)
+            code, state = run_callback_server(
+                port=51121,
+                timeout=60,
+                expected_state=auth_data.get("state", ""),
+            )
         except KeyboardInterrupt:
             print("\nLogin cancelled by user.")
             return False
@@ -189,7 +264,12 @@ def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
                 parsed = urlparse(user_input)
                 query_params = parse_qs(parsed.query)
                 code = query_params.get("code", [user_input])[0]
-                state = query_params.get("state", [auth_data.get("state", "")])[0]
+                state_values = query_params.get("state", [])
+                state = state_values[0] if state_values else None
+                expected_state = auth_data.get("state", "")
+                if expected_state and state != expected_state:
+                    print("Login failed: OAuth state mismatch.")
+                    return False
             else:
                 code = user_input
                 state = auth_data.get("state", "")

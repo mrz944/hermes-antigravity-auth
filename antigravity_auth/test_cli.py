@@ -2,6 +2,9 @@ import unittest
 import tempfile
 import os
 import sys
+import threading
+import urllib.error
+import urllib.request
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
@@ -23,7 +26,13 @@ class TestCli(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_run_login_flow_manual(self):
-        with patch.object(cli_module, "exchange_antigravity") as mock_exchange:
+        auth_data = {
+            "url": "https://auth",
+            "verifier": "v",
+            "state": "state_abc",
+        }
+        with patch.object(cli_module, "authorize_antigravity", return_value=auth_data), \
+             patch.object(cli_module, "exchange_antigravity") as mock_exchange:
             mock_exchange.return_value = {
                 "type": "success",
                 "email": "test@example.com",
@@ -33,7 +42,7 @@ class TestCli(unittest.TestCase):
                 "projectId": "project_123"
             }
 
-            with patch("builtins.input", return_value="http://localhost:51121/?code=***&state=state_abc"):
+            with patch("builtins.input", return_value="http://localhost:51121/?code=manual-code&state=state_abc"):
                 success = run_login_flow(project_id="project_123", no_browser=True)
                 self.assertTrue(success)
 
@@ -60,6 +69,151 @@ class TestCli(unittest.TestCase):
             success = run_login_flow(project_id="project_123", no_browser=True)
         self.assertTrue(success)
         mock_exchange.assert_called_once_with("manual-code", "encoded-state")
+
+    def test_run_login_flow_rejects_manual_redirect_state_mismatch(self):
+        auth_data = {
+            "url": "https://auth",
+            "verifier": "v",
+            "state": "expected-state",
+        }
+        with patch.object(cli_module, "authorize_antigravity", return_value=auth_data), \
+             patch("builtins.input", return_value="http://localhost:51121/?code=manual-code&state=wrong-state"), \
+             patch.object(cli_module, "exchange_antigravity") as mock_exchange:
+            success = run_login_flow(project_id="project_123", no_browser=True)
+
+        self.assertFalse(success)
+        mock_exchange.assert_not_called()
+
+    def test_run_login_flow_rejects_manual_redirect_missing_state(self):
+        auth_data = {
+            "url": "https://auth",
+            "verifier": "v",
+            "state": "expected-state",
+        }
+        with patch.object(cli_module, "authorize_antigravity", return_value=auth_data), \
+             patch("builtins.input", return_value="http://localhost:51121/?code=manual-code"), \
+             patch.object(cli_module, "exchange_antigravity") as mock_exchange:
+            success = run_login_flow(project_id="project_123", no_browser=True)
+
+        self.assertFalse(success)
+        mock_exchange.assert_not_called()
+
+    def test_run_login_flow_browser_callback_waits_for_expected_state(self):
+        auth_data = {
+            "url": "https://auth",
+            "verifier": "v",
+            "state": "expected-state",
+        }
+        with patch.object(cli_module, "authorize_antigravity", return_value=auth_data), \
+             patch.object(cli_module.webbrowser, "open", return_value=True), \
+             patch.object(cli_module, "run_callback_server", return_value=("browser-code", "expected-state")) as mock_callback, \
+             patch.object(cli_module, "exchange_antigravity", return_value={
+                 "type": "success",
+                 "email": "test@example.com",
+                 "refresh": "refresh_abc|project_123",
+                 "access": "access_xyz",
+                 "expires": 9999999999,
+                 "projectId": "project_123",
+             }), \
+             patch.object(cli_module, "sync_token_to_all_auth_stores"):
+            success = run_login_flow(project_id="project_123", no_browser=False)
+
+        self.assertTrue(success)
+        mock_callback.assert_called_once_with(
+            port=51121,
+            timeout=60,
+            expected_state="expected-state",
+        )
+
+    def test_callback_handler_rejects_state_mismatch_without_consuming_callback(self):
+        server = cli_module.ThreadSafeHTTPServer(("127.0.0.1", 0), cli_module.OAuthCallbackHandler)
+        server.expected_state = "expected-state"
+        server.callback_code = None
+        server.callback_state = None
+        server.callback_error = None
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?code=evil-code&state=wrong-state",
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 400)
+            self.assertIsNone(server.callback_code)
+            self.assertIsNone(server.callback_state)
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/?code=good-code&state=expected-state",
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"Authentication Success", response.read())
+
+            self.assertEqual(server.callback_code, "good-code")
+            self.assertEqual(server.callback_state, "expected-state")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_callback_handler_rejects_error_callback_state_mismatch_without_stopping(self):
+        server = cli_module.ThreadSafeHTTPServer(("127.0.0.1", 0), cli_module.OAuthCallbackHandler)
+        server.expected_state = "expected-state"
+        server.callback_code = None
+        server.callback_state = None
+        server.callback_error = None
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?error=access_denied&state=wrong-state",
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 400)
+            self.assertIsNone(server.callback_code)
+            self.assertIsNone(server.callback_state)
+            self.assertIsNone(server.callback_error)
+
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/?code=good-code&state=expected-state",
+                timeout=5,
+            ) as response:
+                self.assertEqual(response.status, 200)
+
+            self.assertEqual(server.callback_code, "good-code")
+            self.assertEqual(server.callback_state, "expected-state")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_callback_handler_records_matching_state_oauth_error_as_failure(self):
+        server = cli_module.ThreadSafeHTTPServer(("127.0.0.1", 0), cli_module.OAuthCallbackHandler)
+        server.expected_state = "expected-state"
+        server.callback_code = None
+        server.callback_state = None
+        server.callback_error = None
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            with self.assertRaises(urllib.error.HTTPError) as context:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/?error=access_denied&state=expected-state",
+                    timeout=5,
+                )
+            self.assertEqual(context.exception.code, 400)
+            self.assertIsNone(server.callback_code)
+            self.assertEqual(server.callback_state, "expected-state")
+            self.assertEqual(server.callback_error, "access_denied")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_run_login_flow_sets_family_indices_and_cursor_to_new_account(self):
         from .storage import load_accounts, save_accounts

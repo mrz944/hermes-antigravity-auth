@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 from typing import Any
 
@@ -184,19 +185,31 @@ class RateLimitTracker:
     self._dedup_window: dict[str, float] = {}
     # Dedup window duration in ms
     self._dedup_window_ms: float = 5000
+    self._lock = threading.Lock()
+
+  def _prune_expired(self, now: float) -> None:
+    expired_keys = [
+      key for key, last_seen in self._dedup_window.items()
+      if now - last_seen >= self._dedup_window_ms
+    ]
+    for key in expired_keys:
+      self._dedup_window.pop(key, None)
 
   def is_duplicate(self, account_index: int, quota_key: str) -> bool:
     """Check if this rate limit event is a duplicate within the dedup window."""
     dedup_key = f"{account_index}:{quota_key}"
     now = now_ms()
-    last_seen = self._dedup_window.get(dedup_key)
-    if last_seen is not None and (now - last_seen) < self._dedup_window_ms:
-      return True
-    self._dedup_window[dedup_key] = now
-    return False
+    with self._lock:
+      self._prune_expired(now)
+      last_seen = self._dedup_window.get(dedup_key)
+      if last_seen is not None and (now - last_seen) < self._dedup_window_ms:
+        return True
+      self._dedup_window[dedup_key] = now
+      return False
 
   def clear(self) -> None:
-    self._dedup_window.clear()
+    with self._lock:
+      self._dedup_window.clear()
 
 
 def mark_rate_limited(
