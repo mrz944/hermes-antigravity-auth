@@ -315,30 +315,6 @@ def probe_account_health(account: dict) -> VerificationProbeResult:
             message="Could not refresh access token for this account.",
         )
 
-    synced_refresh = refreshed.get("refresh") or packed_refresh
-    email_for_sync = account.get("email")
-    sync_token_to_auth_json(
-        access_token=access_token,
-        refresh_token=synced_refresh,
-        project_id=project_id_for_sync,
-        email=email_for_sync,
-        set_active=False
-    )
-    try:
-        try:
-            from .auth_sync import sync_token_to_google_oauth
-        except ImportError:
-            from auth_sync import sync_token_to_google_oauth
-        sync_token_to_google_oauth(
-            access_token=access_token,
-            refresh_token=synced_refresh,
-            project_id=project_id_for_sync,
-            email=email_for_sync,
-            expires_ms=refreshed.get("expires"),
-        )
-    except Exception:
-        pass
-
     project_id = (
         account.get("managedProjectId")
         or account.get("projectId")

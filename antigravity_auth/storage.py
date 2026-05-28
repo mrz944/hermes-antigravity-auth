@@ -20,6 +20,11 @@ except ImportError:
 _accounts_store_lock = threading.Lock()
 
 
+def _secret_file_opener(path: str, flags: int) -> int:
+    """Open secret-bearing temp files with private permissions immediately."""
+    return os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+
+
 def get_hermes_home() -> Path:
     """
     Returns the absolute Path to the Hermes home directory.
@@ -178,7 +183,7 @@ def save_accounts(storage_dict: dict[str, Any]) -> None:
 
     with _accounts_store_lock:
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8", opener=_secret_file_opener) as f:
                 json.dump(storage_dict, f, indent=2)
             os.replace(tmp_path, path)
             os.chmod(path, 0o600)
@@ -245,9 +250,11 @@ def sync_token_to_auth_json(
         
         if set_active:
             data["active_provider"] = "google-gemini-cli"
+        elif not access_token and not refresh_token and data.get("active_provider") in ("antigravity", "google-gemini-cli"):
+            data["active_provider"] = ""
             
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8", opener=_secret_file_opener) as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp_path, path)
             os.chmod(path, 0o600)

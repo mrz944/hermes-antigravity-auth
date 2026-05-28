@@ -312,6 +312,134 @@ class TestToken(unittest.TestCase):
         self.assertEqual(auth_json["providers"]["antigravity"]["email"], "keep@example.com")
 
     @patch("urllib.request.urlopen")
+    def test_invalid_grant_persist_repairs_auth_when_failing_token_is_stale(self, mock_urlopen):
+        self._mock_invalid_grant(mock_urlopen)
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "new@example.com",
+                    "refreshToken": "new_refresh",
+                    "projectId": "new_project",
+                }
+            ],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        save_accounts(accounts_data)
+        sync_token_to_auth_json("old_access", "old_refresh|old_project", "old_project", "old@example.com")
+
+        auth = {
+            "refresh": "old_refresh|old_project",
+            "access": "old_access",
+            "expires": 0,
+            "email": "old@example.com",
+        }
+
+        with self.assertRaises(AntigravityTokenRefreshError) as context:
+            refresh_access_token(auth, persist=True, set_active=True)
+
+        self.assertEqual(context.exception.code, "invalid_grant")
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"], accounts_data["accounts"])
+
+        active = get_active_token_from_auth_json()
+        self.assertEqual(active["access_token"], "")
+        self.assertEqual(active["refresh_token"], "new_refresh|new_project")
+        self.assertEqual(active["project_id"], "new_project")
+
+    @patch("urllib.request.urlopen")
+    def test_stale_invalid_grant_repair_uses_family_index_when_active_index_is_invalid(self, mock_urlopen):
+        self._mock_invalid_grant(mock_urlopen)
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "first@example.com",
+                    "refreshToken": "first_refresh",
+                    "projectId": "first_project",
+                },
+                {
+                    "email": "family@example.com",
+                    "refreshToken": "family_refresh",
+                    "projectId": "family_project",
+                    "managedProjectId": "family_managed",
+                },
+            ],
+            "activeIndex": 99,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 1, "gemini": 0},
+        }
+        save_accounts(accounts_data)
+        sync_token_to_auth_json("old_access", "old_refresh|old_project", "old_project", "old@example.com")
+
+        with self.assertRaises(AntigravityTokenRefreshError) as context:
+            refresh_access_token({
+                "refresh": "old_refresh|old_project",
+                "access": "old_access",
+                "expires": 0,
+                "email": "old@example.com",
+            }, persist=True, set_active=True)
+
+        self.assertEqual(context.exception.code, "invalid_grant")
+        active = get_active_token_from_auth_json()
+        self.assertEqual(active["access_token"], "")
+        self.assertEqual(active["refresh_token"], "family_refresh|family_project|family_managed")
+        self.assertEqual(active["project_id"], "family_project")
+
+    @patch("urllib.request.urlopen")
+    def test_refresh_rotation_updates_only_matching_project_identity(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.headers = {}
+        mock_response.read.return_value = json.dumps({
+            "access_token": "new_access_for_project_a",
+            "expires_in": 3600,
+            "refresh_token": "rotated_refresh_for_project_a",
+        }).encode("utf-8")
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        accounts_data = {
+            "version": 4,
+            "accounts": [
+                {
+                    "email": "a@example.com",
+                    "refreshToken": "shared_refresh",
+                    "projectId": "project_a",
+                },
+                {
+                    "email": "b@example.com",
+                    "refreshToken": "shared_refresh",
+                    "projectId": "project_b",
+                    "managedProjectId": "managed_b",
+                },
+            ],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        }
+        save_accounts(accounts_data)
+
+        updated_auth = refresh_access_token({
+            "refresh": "shared_refresh|project_a|managed_a",
+            "access": "old_access",
+            "expires": 0,
+            "email": "a@example.com",
+        })
+
+        self.assertEqual(updated_auth["refresh"], "rotated_refresh_for_project_a|project_a|managed_a")
+        loaded = load_accounts()
+        self.assertEqual(loaded["accounts"][0]["refreshToken"], "rotated_refresh_for_project_a")
+        self.assertEqual(loaded["accounts"][0]["projectId"], "project_a")
+        self.assertEqual(loaded["accounts"][0]["managedProjectId"], "managed_a")
+        self.assertEqual(loaded["accounts"][1]["refreshToken"], "shared_refresh")
+        self.assertEqual(loaded["accounts"][1]["projectId"], "project_b")
+        self.assertEqual(loaded["accounts"][1]["managedProjectId"], "managed_b")
+
+    @patch("urllib.request.urlopen")
     def test_refresh_access_token_gzipped_response(self, mock_urlopen):
         # Create gzipped response body
         response_data = {

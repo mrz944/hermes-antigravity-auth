@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from antigravity_auth.storage import (
     get_hermes_home,
@@ -68,6 +69,23 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(loaded["accounts"][0]["email"], "test@example.com")
         self.assertEqual(loaded["accounts"][0]["refreshToken"], "refresh_123")
 
+    def test_save_accounts_temp_file_is_private_before_replace(self):
+        observed_modes = []
+        original_replace = os.replace
+
+        def inspect_tmp_before_replace(src, dst):
+            observed_modes.append(os.stat(src).st_mode & 0o777)
+            return original_replace(src, dst)
+
+        old_umask = os.umask(0)
+        try:
+            with patch("antigravity_auth.storage.os.replace", side_effect=inspect_tmp_before_replace):
+                save_accounts({"version": 4, "accounts": []})
+        finally:
+            os.umask(old_umask)
+
+        self.assertEqual(observed_modes, [0o600])
+
     def test_sync_token_to_auth_json_new_and_existing(self):
         sync_token_to_auth_json(
             access_token="acc_111",
@@ -110,6 +128,56 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(data["active_provider"], "google-gemini-cli")
         self.assertIn("antigravity", data["providers"])
         self.assertIn("google-gemini-cli", data["providers"])
+        self.assertEqual(
+            data["providers"]["google-gemini-cli"],
+            data["providers"]["antigravity"],
+        )
+
+    def test_sync_token_to_auth_json_temp_file_is_private_before_replace(self):
+        observed_modes = []
+        original_replace = os.replace
+
+        def inspect_tmp_before_replace(src, dst):
+            observed_modes.append(os.stat(src).st_mode & 0o777)
+            return original_replace(src, dst)
+
+        old_umask = os.umask(0)
+        try:
+            with patch("antigravity_auth.storage.os.replace", side_effect=inspect_tmp_before_replace):
+                sync_token_to_auth_json(
+                    access_token="secret_access",
+                    refresh_token="secret_refresh|secret_project",
+                    project_id="secret_project",
+                    email="user@example.com",
+                )
+        finally:
+            os.umask(old_umask)
+
+        self.assertEqual(observed_modes, [0o600])
+
+    def test_sync_token_to_auth_json_clears_antigravity_active_provider_when_tokens_empty(self):
+        sync_token_to_auth_json(
+            access_token="acc_111",
+            refresh_token="ref_222|proj_333",
+            project_id="proj_333",
+            email="user@example.com",
+            set_active=True,
+        )
+
+        sync_token_to_auth_json(
+            access_token="",
+            refresh_token="",
+            project_id="",
+            email=None,
+            set_active=False,
+        )
+
+        with open(get_auth_json_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        self.assertEqual(data["active_provider"], "")
+        self.assertEqual(data["providers"]["antigravity"]["tokens"]["access_token"], "")
+        self.assertEqual(data["providers"]["antigravity"]["tokens"]["refresh_token"], "")
         self.assertEqual(
             data["providers"]["google-gemini-cli"],
             data["providers"]["antigravity"],

@@ -185,7 +185,9 @@ class TestExtractVerificationErrorDetails(unittest.TestCase):
 
 
 class TestProbeAccountHealth(unittest.TestCase):
-    def test_syncs_rotated_refresh_token_to_google_oauth(self):
+    def test_probe_uses_refreshed_access_without_rewriting_auth_stores(self):
+        from antigravity_auth import verification
+        from antigravity_auth.storage import get_active_token_from_auth_json, sync_token_to_auth_json
         from antigravity_auth.verification import probe_account_health
 
         account = {
@@ -195,7 +197,7 @@ class TestProbeAccountHealth(unittest.TestCase):
             "managedProjectId": "managed-1",
         }
         refresh_calls = []
-        synced = []
+        verify_calls = []
 
         def fake_refresh(auth, **kwargs):
             refresh_calls.append(auth["refresh"])
@@ -205,21 +207,43 @@ class TestProbeAccountHealth(unittest.TestCase):
                 "expires": 123,
             }
 
+        def fake_verify(account, access_token, project_id=None):
+            verify_calls.append({
+                "account": account,
+                "access_token": access_token,
+                "project_id": project_id,
+            })
+            return VerificationProbeResult("ok", "ok")
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}), \
-                 patch("antigravity_auth.verification.refresh_access_token", side_effect=fake_refresh), \
-                 patch("antigravity_auth.verification.verify_account_access", return_value=VerificationProbeResult("ok", "ok")), \
-                 patch("antigravity_auth.auth_sync.sync_token_to_google_oauth", side_effect=lambda **kw: synced.append(kw) or True):
-                result = probe_account_health(account)
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}):
+                sync_token_to_auth_json(
+                    "active-access",
+                    "active-refresh|active-proj",
+                    "active-proj",
+                    "active@example.com",
+                    set_active=True,
+                )
+
+                with patch("antigravity_auth.verification.refresh_access_token", side_effect=fake_refresh), \
+                     patch("antigravity_auth.verification.verify_account_access", side_effect=fake_verify), \
+                     patch("antigravity_auth.verification.sync_token_to_auth_json", wraps=verification.sync_token_to_auth_json) as auth_json_sync, \
+                     patch("antigravity_auth.auth_sync.sync_token_to_google_oauth") as google_oauth_sync:
+                    result = probe_account_health(account)
+
+                active = get_active_token_from_auth_json()
 
         self.assertEqual(result.status, "ok")
         self.assertEqual(refresh_calls, ["old-refresh|proj-1|managed-1"])
-        self.assertEqual(synced[0]["refresh_token"], "new-refresh|proj-1|managed-1")
-        self.assertEqual(synced[0]["project_id"], "proj-1")
-        self.assertEqual(synced[0]["email"], "user@example.com")
-        self.assertEqual(synced[0]["expires_ms"], 123)
+        self.assertEqual(verify_calls[0]["access_token"], "new-access")
+        self.assertEqual(verify_calls[0]["project_id"], "managed-1")
+        auth_json_sync.assert_not_called()
+        google_oauth_sync.assert_not_called()
+        self.assertEqual(active["access_token"], "active-access")
+        self.assertEqual(active["refresh_token"], "active-refresh|active-proj")
+        self.assertEqual(active["project_id"], "active-proj")
 
-    def test_google_oauth_sync_failure_is_non_fatal(self):
+    def test_probe_does_not_call_auth_store_sync_even_when_sync_would_fail(self):
         from antigravity_auth.verification import probe_account_health
 
         account = {
@@ -238,7 +262,8 @@ class TestProbeAccountHealth(unittest.TestCase):
             with patch.dict(os.environ, {"HERMES_HOME": tmpdir}), \
                  patch("antigravity_auth.verification.refresh_access_token", return_value=refreshed), \
                  patch("antigravity_auth.verification.verify_account_access", return_value=VerificationProbeResult("ok", "ok")), \
-                 patch("antigravity_auth.auth_sync.sync_token_to_google_oauth", side_effect=RuntimeError("sync boom")):
+                 patch("antigravity_auth.verification.sync_token_to_auth_json", side_effect=AssertionError("auth.json sync must not be called")), \
+                 patch("antigravity_auth.auth_sync.sync_token_to_google_oauth", side_effect=AssertionError("google_oauth sync must not be called")):
                 result = probe_account_health(account)
 
         self.assertEqual(result.status, "ok")

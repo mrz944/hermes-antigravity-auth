@@ -8,10 +8,22 @@ from urllib.parse import urlencode
 
 try:
     from .constants import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-    from .storage import load_accounts, save_accounts, sync_token_to_auth_json
+    from .storage import (
+        get_active_token_from_auth_json,
+        load_accounts,
+        resolve_active_account_index,
+        save_accounts,
+        sync_token_to_auth_json,
+    )
 except ImportError:
     from constants import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
-    from storage import load_accounts, save_accounts, sync_token_to_auth_json
+    from storage import (
+        get_active_token_from_auth_json,
+        load_accounts,
+        resolve_active_account_index,
+        save_accounts,
+        sync_token_to_auth_json,
+    )
 
 
 def _decompress(body: bytes, response) -> bytes:
@@ -161,11 +173,56 @@ def _packed_refresh_for_account(account: dict) -> str:
     })
 
 
+def _auth_json_points_at_raw_refresh_token(raw_refresh_token: str) -> bool:
+    try:
+        active = get_active_token_from_auth_json()
+        active_parts = parse_refresh_parts(active.get("refresh_token", ""))
+        return active_parts.get("refreshToken") == raw_refresh_token
+    except Exception:
+        return False
+
+
+def _sync_runtime_auth_to_active_account_or_clear(accounts_data: dict) -> None:
+    accounts = accounts_data.get("accounts", [])
+    if not isinstance(accounts, list) or not accounts:
+        _sync_token_to_all_auth_stores_best_effort(
+            "",
+            "",
+            project_id="",
+            email=None,
+            set_active=False,
+        )
+        return
+
+    active_idx = resolve_active_account_index(accounts_data)
+    active_account = accounts[active_idx]
+    if not isinstance(active_account, dict):
+        _sync_token_to_all_auth_stores_best_effort(
+            "",
+            "",
+            project_id="",
+            email=None,
+            set_active=False,
+        )
+        return
+
+    packed_refresh = _packed_refresh_for_account(active_account)
+    _sync_token_to_all_auth_stores_best_effort(
+        access_token="",
+        refresh_token=packed_refresh,
+        project_id=active_account.get("projectId") or "",
+        email=active_account.get("email"),
+        expires_ms=None,
+        set_active=True,
+    )
+
+
 def _remove_invalid_grant_account_and_sync_auth(raw_refresh_token: str) -> None:
     accounts_data = load_accounts()
     accounts = accounts_data.get("accounts", [])
     if not isinstance(accounts, list):
-        return
+        accounts = []
+        accounts_data["accounts"] = accounts
 
     removed_any = False
     idx = 0
@@ -179,36 +236,35 @@ def _remove_invalid_grant_account_and_sync_auth(raw_refresh_token: str) -> None:
             continue
         idx += 1
 
-    if not removed_any:
+    if removed_any:
+        save_accounts(accounts_data)
+        _sync_runtime_auth_to_active_account_or_clear(accounts_data)
         return
 
-    save_accounts(accounts_data)
+    if _auth_json_points_at_raw_refresh_token(raw_refresh_token):
+        _sync_runtime_auth_to_active_account_or_clear(accounts_data)
 
-    if accounts:
-        active_idx = _clamp_storage_index(
-            _coerce_storage_index(accounts_data.get("activeIndex"), 0),
-            len(accounts),
-        )
-        active_account = accounts[active_idx]
-        if not isinstance(active_account, dict):
-            return
-        packed_refresh = _packed_refresh_for_account(active_account)
-        _sync_token_to_all_auth_stores_best_effort(
-            access_token="",
-            refresh_token=packed_refresh,
-            project_id=active_account.get("projectId") or "",
-            email=active_account.get("email"),
-            expires_ms=None,
-            set_active=True,
-        )
-    else:
-        _sync_token_to_all_auth_stores_best_effort(
-            "",
-            "",
-            project_id="",
-            email=None,
-            set_active=False,
-        )
+
+def _account_identity_matches_refresh_parts(account: dict, parts: dict[str, str | None]) -> bool:
+    if account.get("refreshToken") != parts.get("refreshToken"):
+        return False
+
+    identity_pairs = (
+        (account.get("projectId"), parts.get("projectId")),
+        (account.get("managedProjectId"), parts.get("managedProjectId")),
+    )
+    for account_value, caller_value in identity_pairs:
+        if account_value and caller_value and account_value != caller_value:
+            return False
+    return True
+
+
+def _apply_refresh_rotation_to_account(account: dict, parts: dict[str, str | None], new_raw_refresh: str) -> None:
+    account["refreshToken"] = new_raw_refresh
+    if parts.get("projectId") and not account.get("projectId"):
+        account["projectId"] = parts["projectId"]
+    if parts.get("managedProjectId") and not account.get("managedProjectId"):
+        account["managedProjectId"] = parts["managedProjectId"]
 
 
 def is_access_token_expired(auth: dict) -> bool:
@@ -341,7 +397,7 @@ def refresh_access_token(auth: dict, *, persist: bool = False, set_active: bool 
     expires_in = payload.get("expires_in") or 3600
     expires_ms = start_time_ms + int(expires_in) * 1000
     
-    new_raw_refresh = payload.get("refresh_token") or parts["refreshToken"]
+    new_raw_refresh = str(payload.get("refresh_token") or parts["refreshToken"])
     refreshed_parts = {
         "refreshToken": new_raw_refresh,
         "projectId": parts.get("projectId"),
@@ -374,12 +430,8 @@ def refresh_access_token(auth: dict, *, persist: bool = False, set_active: bool 
         accounts_data = load_accounts()
         updated_any = False
         for acc in accounts_data.get("accounts", []):
-            if acc.get("refreshToken") == parts["refreshToken"]:
-                acc["refreshToken"] = new_raw_refresh
-                if parts.get("projectId"):
-                    acc["projectId"] = parts["projectId"]
-                if parts.get("managedProjectId"):
-                    acc["managedProjectId"] = parts["managedProjectId"]
+            if isinstance(acc, dict) and _account_identity_matches_refresh_parts(acc, parts):
+                _apply_refresh_rotation_to_account(acc, parts, new_raw_refresh)
                 updated_any = True
         if updated_any:
             save_accounts(accounts_data)
