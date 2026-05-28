@@ -343,8 +343,24 @@ class TestTransformMessagesToContents(unittest.TestCase):
     self.assertEqual(contents[1]["parts"][0], {"text": "Checking weather..."})
     self.assertEqual(
       contents[1]["parts"][1],
-      {"functionCall": {"name": "get_weather", "args": {"city": "Tokyo"}}},
+      {"functionCall": {"name": "get_weather", "args": {"city": "Tokyo"}, "id": "tu1"}},
     )
+
+  def test_tool_result_content_part_preserves_tool_use_id(self):
+    messages = [
+      {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "tu1", "name": "get_weather", "input": {"city": "Tokyo"}},
+      ]},
+      {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "tu1", "content": "sunny"},
+      ]},
+    ]
+    contents, _ = transform_messages_to_contents(messages)
+    self.assertEqual(contents[1]["parts"][0], {"functionResponse": {
+      "name": "get_weather",
+      "id": "tu1",
+      "response": {"content": "sunny"},
+    }})
 
   def test_tool_result_content_part_type(self):
     """Supports Anthropic-style tool_result parts within content arrays."""

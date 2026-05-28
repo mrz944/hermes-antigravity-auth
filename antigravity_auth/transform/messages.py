@@ -26,7 +26,10 @@ def parse_data_url(url: str) -> tuple[str, str] | None:
   return None
 
 
-def _convert_content_part(part: dict) -> dict | None:
+def _convert_content_part(
+  part: dict,
+  tool_call_id_to_name: dict[str, str] | None = None,
+) -> dict | None:
   if not isinstance(part, dict):
     return None
 
@@ -54,12 +57,24 @@ def _convert_content_part(part: dict) -> dict | None:
     args = part.get("input", {})
     if not isinstance(args, dict):
       args = {}
-    return {"functionCall": {"name": name, "args": args}}
+    function_call = {"name": name, "args": args}
+    tool_id = part.get("id")
+    if tool_id:
+      function_call["id"] = str(tool_id)
+      if name and tool_call_id_to_name is not None:
+        tool_call_id_to_name[str(tool_id)] = str(name)
+    return {"functionCall": function_call}
 
   if part_type == "tool_result":
     name = part.get("name", "")
     content = part.get("content", "")
-    return {"functionResponse": {"name": name, "response": {"content": content}}}
+    result_id = part.get("tool_use_id") or part.get("id")
+    if not name and result_id and tool_call_id_to_name is not None:
+      name = tool_call_id_to_name.get(str(result_id), "")
+    function_response = {"name": name, "response": {"content": content}}
+    if result_id:
+      function_response["id"] = str(result_id)
+    return {"functionResponse": function_response}
 
   if "text" in part and isinstance(part["text"], str):
     return {"text": part["text"]}
@@ -67,7 +82,10 @@ def _convert_content_part(part: dict) -> dict | None:
   return None
 
 
-def _content_to_parts(content: str | list | None) -> list[dict]:
+def _content_to_parts(
+  content: str | list | None,
+  tool_call_id_to_name: dict[str, str] | None = None,
+) -> list[dict]:
   if content is None:
     return []
 
@@ -80,7 +98,7 @@ def _content_to_parts(content: str | list | None) -> list[dict]:
       if isinstance(item, str):
         parts.append({"text": item})
       elif isinstance(item, dict):
-        converted = _convert_content_part(item)
+        converted = _convert_content_part(item, tool_call_id_to_name)
         if converted is not None:
           parts.append(converted)
     return parts
@@ -175,7 +193,7 @@ def transform_messages_to_contents(
       continue
 
     if role == "assistant":
-      parts = _content_to_parts(content)
+      parts = _content_to_parts(content, tool_call_id_to_name)
       if isinstance(tool_calls, list) and tool_calls:
         parts.extend(_convert_tool_calls(tool_calls, tool_call_id_to_name))
       if parts:
@@ -198,7 +216,7 @@ def transform_messages_to_contents(
       raw_contents.append({"role": "user", "parts": parts})
       continue
 
-    parts = _content_to_parts(content)
+    parts = _content_to_parts(content, tool_call_id_to_name)
     if parts:
       raw_contents.append({"role": "user", "parts": parts})
 
