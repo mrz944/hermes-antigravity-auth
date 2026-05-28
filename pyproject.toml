@@ -19,6 +19,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  "httpx>=0.28",
   # pyyaml is optional - config falls back to defaults if not installed
 ]
 [project.optional-dependencies]
