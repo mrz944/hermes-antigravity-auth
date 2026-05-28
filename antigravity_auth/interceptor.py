@@ -9,6 +9,11 @@ from typing import Any
 import httpx
 
 from .config import get_config
+from .fingerprint import (
+    build_fingerprint_headers,
+    generate_fingerprint,
+    update_fingerprint_version,
+)
 from .transform.envelope import (
     HeaderStyle,
     build_antigravity_headers,
@@ -454,22 +459,41 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
     selected = _select_request_account(model, header_style, config)
     model = resolve_model_for_header_style(model, header_style)
     
-    new_headers = build_antigravity_headers(header_style=header_style)
     for key in list(request.headers.keys()):
         if key.lower() not in ("host", "authorization", "content-type", "accept", "accept-encoding", "content-length"):
             del request.headers[key]
-    for key, val in new_headers.items():
-        request.headers[key] = val
 
-    try:
-        from .fingerprint import generate_fingerprint
-        fp = generate_fingerprint()
-        if fp:
-            cm = fp.get("clientMetadata")
-            if cm:
-                request.headers["Client-Metadata"] = json.dumps(cm)
-    except Exception:
-        pass
+    account = selected.get("account") if selected else None
+    if account is not None:
+        try:
+            fingerprint_changed = False
+            fp = getattr(account, "fingerprint", None)
+            if not fp:
+                fp = generate_fingerprint()
+                account.fingerprint = fp
+                fingerprint_changed = True
+            if isinstance(fp, dict):
+                if update_fingerprint_version(fp):
+                    fingerprint_changed = True
+                for key, val in build_fingerprint_headers(fp).items():
+                    request.headers[key] = val
+                cm = fp.get("clientMetadata")
+                if cm:
+                    request.headers["Client-Metadata"] = json.dumps(cm)
+                if fingerprint_changed:
+                    try:
+                        from .accounts.shared import get_global_manager
+                        mgr = get_global_manager()
+                        if mgr is not None:
+                            mgr.save_to_disk()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    else:
+        new_headers = build_antigravity_headers(header_style=header_style)
+        for key, val in new_headers.items():
+            request.headers[key] = val
 
     if selected and selected.get("access"):
         selected_index = selected.get("account_index")

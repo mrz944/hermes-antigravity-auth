@@ -63,6 +63,14 @@ class TestBuildFingerprintHeaders(unittest.TestCase):
         result = build_fingerprint_headers(fp)
         self.assertEqual(result, {"User-Agent": "TestAgent/1.0"})
 
+    def test_api_client_returns_x_goog_api_client_header(self):
+        fp = {"userAgent": "TestAgent/1.0", "apiClient": "google-cloud-sdk vscode/1.96.0"}
+        result = build_fingerprint_headers(fp)
+        self.assertEqual(result, {
+            "User-Agent": "TestAgent/1.0",
+            "X-Goog-Api-Client": "google-cloud-sdk vscode/1.96.0",
+        })
+
     def test_missing_user_agent_returns_empty_dict(self):
         fp = {"other": "value"}
         result = build_fingerprint_headers(fp)

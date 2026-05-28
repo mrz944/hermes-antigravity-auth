@@ -109,11 +109,17 @@ class TestRequestHook(unittest.TestCase):
             "soft_quota_threshold_percent": 90,
         })()
         with patch("antigravity_auth.interceptor.get_config", return_value=config), patch(
+            "antigravity_auth.interceptor._select_request_account",
+            return_value=None,
+        ), patch(
             "antigravity_auth.interceptor.build_antigravity_headers",
             return_value={"User-Agent": "antigravity-test"},
-        ) as build_headers:
+        ) as build_headers, patch(
+            "antigravity_auth.interceptor.generate_fingerprint"
+        ) as generate:
             self.hook(r)
         build_headers.assert_called_once_with(header_style="antigravity")
+        generate.assert_not_called()
 
     def test_request_hook_records_header_style_and_model_family_metadata(self):
         r = self._make_request(model="claude-sonnet-4-6-thinking")
@@ -385,6 +391,169 @@ class TestRequestHook(unittest.TestCase):
             _select_request_account("claude-sonnet-4-6", "antigravity", config)
 
         self.assertEqual(calls[0].get("persist"), True)
+
+    def test_request_hook_uses_selected_account_fingerprint(self):
+        from antigravity_auth.interceptor import _antigravity_request_hook
+
+        class FakeAccount:
+            index = 0
+            fingerprint = {
+                "userAgent": "UA/account-0",
+                "clientMetadata": {"ideType": "ANTIGRAVITY", "platform": "MACOS", "pluginType": "GEMINI"},
+            }
+
+        config = type("Config", (), {
+            "cli_first": False,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+        })()
+        request = httpx.Request(
+            "POST",
+            "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+            headers={"Authorization": "Bearer stale", "Content-Type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "request": {"contents": []}},
+        )
+        request.read()
+
+        with patch("antigravity_auth.interceptor.get_config", return_value=config), \
+             patch("antigravity_auth.interceptor._select_request_account", return_value={"access": "a", "account_index": 0, "account": FakeAccount()}):
+            _antigravity_request_hook(request)
+
+        self.assertEqual(request.headers["User-Agent"], "UA/account-0")
+        self.assertIn('"platform": "MACOS"', request.headers["Client-Metadata"])
+
+    def test_request_hook_current_selected_account_fingerprint_does_not_generate_or_save(self):
+        from antigravity_auth.interceptor import _antigravity_request_hook
+
+        class FakeAccount:
+            index = 0
+            fingerprint = {
+                "userAgent": "UA/current",
+                "apiClient": "google-cloud-sdk vscode/1.96.0",
+                "clientMetadata": {"ideType": "ANTIGRAVITY", "platform": "MACOS", "pluginType": "GEMINI"},
+                "createdAt": 123,
+            }
+
+        class FakeManager:
+            def __init__(self):
+                self.save_count = 0
+
+            def save_to_disk(self):
+                self.save_count += 1
+                return True
+
+        config = type("Config", (), {
+            "cli_first": False,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+        })()
+        request = self._make_request(model="claude-sonnet-4-6")
+        fake_mgr = FakeManager()
+
+        with patch("antigravity_auth.interceptor.get_config", return_value=config), \
+             patch("antigravity_auth.interceptor._select_request_account", return_value={"access": "a", "account_index": 0, "account": FakeAccount()}), \
+             patch("antigravity_auth.interceptor.generate_fingerprint") as generate, \
+             patch("antigravity_auth.interceptor.build_antigravity_headers") as build_headers, \
+             patch("antigravity_auth.accounts.shared.get_global_manager", return_value=fake_mgr):
+            _antigravity_request_hook(request)
+
+        generate.assert_not_called()
+        build_headers.assert_not_called()
+        self.assertEqual(fake_mgr.save_count, 0)
+        self.assertEqual(request.headers["User-Agent"], "UA/current")
+        self.assertEqual(request.headers["X-Goog-Api-Client"], "google-cloud-sdk vscode/1.96.0")
+
+    def test_request_hook_missing_selected_account_fingerprint_generates_and_saves_once(self):
+        from antigravity_auth.interceptor import _antigravity_request_hook
+
+        class FakeAccount:
+            index = 0
+            fingerprint = None
+
+        class FakeManager:
+            def __init__(self):
+                self.save_count = 0
+
+            def save_to_disk(self):
+                self.save_count += 1
+                return True
+
+        config = type("Config", (), {
+            "cli_first": False,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+        })()
+        generated = {
+            "userAgent": "UA/generated",
+            "apiClient": "google-cloud-sdk vscode/1.96.0",
+            "clientMetadata": {"ideType": "ANTIGRAVITY", "platform": "MACOS", "pluginType": "GEMINI"},
+            "createdAt": 123,
+        }
+        account = FakeAccount()
+        request = self._make_request(model="claude-sonnet-4-6")
+        fake_mgr = FakeManager()
+
+        with patch("antigravity_auth.interceptor.get_config", return_value=config), \
+             patch("antigravity_auth.interceptor._select_request_account", return_value={"access": "a", "account_index": 0, "account": account}), \
+             patch("antigravity_auth.interceptor.generate_fingerprint", return_value=generated) as generate, \
+             patch("antigravity_auth.accounts.shared.get_global_manager", return_value=fake_mgr):
+            _antigravity_request_hook(request)
+
+        generate.assert_called_once_with()
+        self.assertIs(account.fingerprint, generated)
+        self.assertEqual(fake_mgr.save_count, 1)
+        self.assertEqual(request.headers["User-Agent"], "UA/generated")
+
+    def test_request_hook_updated_selected_account_fingerprint_saves_once(self):
+        from antigravity_auth.interceptor import _antigravity_request_hook
+
+        class FakeAccount:
+            index = 0
+            fingerprint = {
+                "userAgent": "UA/old-version",
+                "clientMetadata": {"ideType": "ANTIGRAVITY", "platform": "MACOS", "pluginType": "GEMINI"},
+            }
+
+        class FakeManager:
+            def __init__(self):
+                self.save_count = 0
+
+            def save_to_disk(self):
+                self.save_count += 1
+                return True
+
+        config = type("Config", (), {
+            "cli_first": False,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+        })()
+        account = FakeAccount()
+        request = self._make_request(model="claude-sonnet-4-6")
+        fake_mgr = FakeManager()
+
+        with patch("antigravity_auth.interceptor.get_config", return_value=config), \
+             patch("antigravity_auth.interceptor._select_request_account", return_value={"access": "a", "account_index": 0, "account": account}), \
+             patch("antigravity_auth.interceptor.generate_fingerprint") as generate, \
+             patch("antigravity_auth.accounts.shared.get_global_manager", return_value=fake_mgr):
+            _antigravity_request_hook(request)
+
+        generate.assert_not_called()
+        self.assertIn("createdAt", account.fingerprint)
+        self.assertIn("apiClient", account.fingerprint)
+        self.assertEqual(fake_mgr.save_count, 1)
+        self.assertEqual(request.headers["User-Agent"], "UA/old-version")
 
     def test_request_hook_removes_stale_authorization_when_selection_fails(self):
         from antigravity_auth.interceptor import _antigravity_request_hook

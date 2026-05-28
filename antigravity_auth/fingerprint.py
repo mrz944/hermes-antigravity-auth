@@ -94,13 +94,18 @@ def update_fingerprint_version(fingerprint: dict[str, Any]) -> bool:
 
 
 def build_fingerprint_headers(fingerprint: dict[str, Any] | None) -> dict[str, str]:
-  """Build User-Agent header from a fingerprint.
+  """Build stable HTTP headers from a fingerprint.
 
   Returns an empty dict if no fingerprint is provided.
   """
   if fingerprint is None:
     return {}
+
+  headers = {}
   ua = fingerprint.get("userAgent", "")
   if ua:
-    return {"User-Agent": ua}
-  return {}
+    headers["User-Agent"] = ua
+  api_client = fingerprint.get("apiClient", "")
+  if api_client:
+    headers["X-Goog-Api-Client"] = api_client
+  return headers
