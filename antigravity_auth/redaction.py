@@ -20,6 +20,8 @@ _SECRET_KEY_FRAGMENTS = (
   "codeverifier",
   "oauth_code",
   "oauthcode",
+  "session_token",
+  "sessiontoken",
 )
 
 _EXACT_SECRET_KEYS = {
