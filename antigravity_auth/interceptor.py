@@ -804,6 +804,13 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
         request.headers["Authorization"] = f"Bearer {selected['access']}"
     else:
         request.extensions["antigravity_account_selection_failed"] = True
+        logger.warning(
+            "Antigravity account selection failed for model=%s; "
+            "request will proceed without Authorization (expect 401). "
+            "Run 'hermes antigravity login' to add accounts or check "
+            "'hermes antigravity accounts' for account health.",
+            model,
+        )
         if "Authorization" in request.headers:
             del request.headers["Authorization"]
 
