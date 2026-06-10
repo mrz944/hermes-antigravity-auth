@@ -252,6 +252,22 @@ def _check_config() -> list[DoctorRow]:
   return rows
 
 
+def _check_oauth_client_credentials() -> DoctorRow:
+  try:
+    from .credentials import credential_file_path, resolve_oauth_credentials
+    client_id, client_secret = resolve_oauth_credentials()
+    if client_id and client_secret:
+      return _row("PASS", "OAuth client credentials", "configured from environment or Hermes Antigravity credential file")
+    return _row(
+      "WARN",
+      "OAuth client credentials",
+      f"not configured; {credential_file_path()} is missing or incomplete and env vars are unset",
+      "Run hermes antigravity set-credentials --client-id <id> --client-secret <secret>.",
+    )
+  except Exception as exc:
+    return _row("FAIL", "OAuth client credentials", f"could not inspect credentials: {exc}", "Run hermes antigravity set-credentials.")
+
+
 def _check_active_refresh() -> DoctorRow:
   try:
     data = load_accounts()
@@ -309,6 +325,7 @@ def run_doctor() -> list[DoctorRow]:
   rows.append(_check_account_store())
   rows.extend(_check_auth_files())
   rows.extend(_check_config())
+  rows.append(_check_oauth_client_credentials())
   rows.append(_check_active_refresh())
   rows.append(_check_model_registry())
   redacted_rows = redact_secrets([row.__dict__ for row in rows])

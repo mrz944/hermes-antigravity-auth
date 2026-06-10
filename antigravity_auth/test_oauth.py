@@ -38,6 +38,14 @@ class TestOAuth(unittest.TestCase):
     def setUp(self):
         # Clear the PKCE verifier store between tests to prevent cross-test pollution
         _pkce_verifier_store.clear()
+        self.env_patch = patch.dict("os.environ", {
+            "ANTIGRAVITY_CLIENT_ID": "test_client_id",
+            "ANTIGRAVITY_CLIENT_SECRET": "test_client_secret",
+        }, clear=False)
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
 
     def test_generate_pkce(self):
         pkce = generate_pkce()

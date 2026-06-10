@@ -120,3 +120,14 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(provider_rows[0].status, "WARN")
         self.assertIn("could not patch aliases", provider_rows[0].detail)
         self.assertIn("google-gemini-cli", provider_rows[0].fix)
+
+    def test_doctor_reports_missing_oauth_client_credentials(self):
+        from antigravity_auth.doctor import _check_oauth_client_credentials
+
+        with patch.dict("os.environ", {"HERMES_HOME": self.temp_dir.name}, clear=True):
+            row = _check_oauth_client_credentials()
+
+        self.assertEqual(row.status, "WARN")
+        self.assertEqual(row.check, "OAuth client credentials")
+        self.assertIn("not configured", row.detail)
+        self.assertIn("set-credentials", row.fix)

@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 try:
     from ._http_utils import decompress_response as _decompress
-    from .constants import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+    from .constants import require_credentials
     from .storage import (
         get_active_token_from_auth_json,
         load_accounts,
@@ -17,7 +17,7 @@ try:
     )
 except ImportError:
     from _http_utils import decompress_response as _decompress
-    from constants import ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
+    from constants import require_credentials
     from storage import (
         get_active_token_from_auth_json,
         load_accounts,
@@ -349,12 +349,13 @@ def refresh_access_token(auth: dict, *, persist: bool = False, set_active: bool 
         raise AntigravityTokenRefreshError("Missing refresh token", status=400)
 
     start_time_ms = int(time.time() * 1000)
+    client_id, client_secret = require_credentials()
     
     token_params = {
         "grant_type": "refresh_token",
         "refresh_token": parts["refreshToken"],
-        "client_id": ANTIGRAVITY_CLIENT_ID,
-        "client_secret": ANTIGRAVITY_CLIENT_SECRET,
+        "client_id": client_id,
+        "client_secret": client_secret,
     }
     
     token_headers = {

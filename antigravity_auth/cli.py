@@ -23,6 +23,7 @@ if __package__ in (None, ""):
 
 import http.server
 import html
+import getpass
 import socketserver
 import threading
 import time
@@ -31,6 +32,7 @@ from urllib.parse import parse_qs, urlparse
 from typing import cast
 
 from .auth_sync import sync_token_to_all_auth_stores, sync_token_to_google_oauth
+from .credentials import MissingOAuthCredentialsError, write_oauth_credentials
 from .oauth import authorize_antigravity, exchange_antigravity
 from .storage import (
     load_accounts,
@@ -272,7 +274,11 @@ def run_callback_server(
 
 
 def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
-    auth_data = authorize_antigravity(project_id=project_id)
+    try:
+        auth_data = authorize_antigravity(project_id=project_id)
+    except MissingOAuthCredentialsError as exc:
+        print(str(exc))
+        return False
     auth_url = auth_data["url"]
     verifier = auth_data["verifier"]
 
@@ -385,6 +391,29 @@ def run_login_flow(project_id: str = "", no_browser: bool = False) -> bool:
     print(f"Logged in as: {email}")
     print(f"Project ID: {resolved_project_id or '<none>'}")
     print("-" * 60)
+    return True
+
+
+def set_credentials(client_id: str = "", client_secret: str = "") -> bool:
+    """Store OAuth client credentials in the Hermes Antigravity credential file."""
+    clean_client_id = (client_id or "").strip()
+    clean_client_secret = (client_secret or "").strip()
+    if not clean_client_id:
+        clean_client_id = input("ANTIGRAVITY_CLIENT_ID: ").strip()
+    if not clean_client_secret:
+        clean_client_secret = getpass.getpass("ANTIGRAVITY_CLIENT_SECRET: ").strip()
+
+    try:
+        path = write_oauth_credentials(clean_client_id, clean_client_secret)
+    except MissingOAuthCredentialsError as exc:
+        print(f"Credentials not saved: {exc}")
+        return False
+    except OSError as exc:
+        print(f"Credentials not saved: {exc}")
+        return False
+
+    print(f"Antigravity OAuth credentials saved to {path}")
+    print("Run hermes antigravity login to authenticate an account.")
     return True
 
 
@@ -1018,6 +1047,10 @@ def setup_cli(parser):
     project_parser.add_argument("email_or_index", help="Email address or account index to update")
     project_parser.add_argument("project_id", help="Google Cloud project ID to use for Antigravity standard tier")
 
+    credentials_parser = subparsers.add_parser("set-credentials", help="Store Antigravity OAuth client credentials")
+    credentials_parser.add_argument("--client-id", default="", help="OAuth desktop client ID")
+    credentials_parser.add_argument("--client-secret", default="", help="OAuth desktop client secret")
+
 
 def handle_cli(args):
     try:
@@ -1031,6 +1064,8 @@ def handle_cli(args):
             delete_account(args.email_or_index)
         elif args.action == "set-project":
             set_account_project(args.email_or_index, args.project_id)
+        elif args.action == "set-credentials":
+            set_credentials(client_id=args.client_id, client_secret=args.client_secret)
         elif args.action in ("quota", "check"):
             check_quotas_and_verify()
         elif args.action == "doctor":
