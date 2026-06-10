@@ -16,9 +16,24 @@ from urllib.parse import unquote, urlparse
 from .storage import get_hermes_home
 
 
-CLI_INIT = '''"""Google Antigravity CLI plugin."""
+CLI_INIT = '''"""Google Antigravity CLI file-plugin wrapper."""
 
-from antigravity_auth.hermes_plugin import register
+import sys
+from pathlib import Path
+
+try:
+  from antigravity_auth.plugin_contract import load_cli_register
+except Exception as exc:
+  raise RuntimeError(
+    "Hermes Antigravity file-plugin wrapper failed to load.\\n"
+    f"Wrapper: {Path(__file__).expanduser()}\\n"
+    f"Python: {Path(sys.executable).expanduser()}\\n"
+    "Cause: antigravity_auth.plugin_contract could not be imported.\\n\\n"
+    "Fix: run `hermes-antigravity-install` from the hermes-antigravity-auth "
+    "checkout so the package is installed into Hermes' Python."
+  ) from exc
+
+register = load_cli_register(__file__)
 '''
 
 CLI_YAML = """name: antigravity-cli
@@ -28,14 +43,24 @@ description: Google Antigravity CLI utilities - login, quotas, account managemen
 author: NoeFabris & Reedtrullz
 """
 
-PROVIDER_INIT = '''"""Google Antigravity provider aliases for Hermes' Cloud Code runtime."""
+PROVIDER_INIT = '''"""Google Antigravity provider file-plugin wrapper."""
 
-# This import * is intentional — hermes_provider_plugin relies on
-# module-level side effects (register_provider, _patch_hermes_model_picker,
-# _set_oauth_env_from_credentials). Explicit named imports would trigger
-# the same side effects but add fragility. DO NOT refactor without
-# understanding the side-effect-driven registration pattern.
-from antigravity_auth.hermes_provider_plugin import *  # noqa: F401,F403
+import sys
+from pathlib import Path
+
+try:
+  from antigravity_auth.plugin_contract import load_provider_namespace
+except Exception as exc:
+  raise RuntimeError(
+    "Hermes Antigravity file-plugin wrapper failed to load.\\n"
+    f"Wrapper: {Path(__file__).expanduser()}\\n"
+    f"Python: {Path(sys.executable).expanduser()}\\n"
+    "Cause: antigravity_auth.plugin_contract could not be imported.\\n\\n"
+    "Fix: run `hermes-antigravity-install` from the hermes-antigravity-auth "
+    "checkout so the package is installed into Hermes' Python."
+  ) from exc
+
+globals().update(load_provider_namespace(__file__))
 '''
 
 PROVIDER_YAML = """name: antigravity
