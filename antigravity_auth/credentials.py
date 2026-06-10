@@ -24,10 +24,7 @@ def _hermes_home() -> Path:
 
 
 def _credential_file_path() -> Path:
-  """Return the configured Antigravity credential file path."""
-  path = os.environ.get("HERMES_ANTIGRAVITY_CREDENTIALS_FILE")
-  if path:
-    return Path(path).expanduser()
+  """Return the canonical Hermes Antigravity credential file path."""
   return _hermes_home() / "antigravity-credentials.json"
 
 

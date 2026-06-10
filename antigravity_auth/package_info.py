@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 from ._version import __version__
 
 PACKAGE_NAME = "hermes-antigravity-auth"
@@ -15,4 +17,4 @@ CANONICAL_INSTALL_COMMAND = f'python3 -m pip install --upgrade "{GIT_PACKAGE_SPE
 
 def python_install_command(python: str) -> str:
   """Return a Hermes-Python-specific package repair command."""
-  return f"{python} -m pip install --upgrade {PACKAGE_SPEC}"
+  return f"{shlex.quote(python)} -m pip install --upgrade {shlex.quote(GIT_PACKAGE_SPEC)}"

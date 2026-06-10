@@ -23,56 +23,73 @@ class TestCredentials(unittest.TestCase):
         self.assertEqual(resolve_oauth_credentials(), ("env-id", "env-secret"))
 
   def test_file_values_load(self):
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
-      json.dump({"client_id": "file-id", "client_secret": "file-secret"}, creds_file)
-      creds_file.flush()
+    with tempfile.TemporaryDirectory() as tmpdir:
+      creds_file = Path(tmpdir) / "antigravity-credentials.json"
+      creds_file.write_text(json.dumps({
+        "client_id": "file-id",
+        "client_secret": "file-secret",
+      }), encoding="utf-8")
 
       with patch.dict("os.environ", {
-        "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
+        "HERMES_HOME": tmpdir,
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("file-id", "file-secret"))
 
   def test_env_non_exhaustive_falls_through_to_file(self):
     """When only one env var is set, env source is skipped — file wins."""
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
-      json.dump({"client_id": "file-id", "client_secret": "file-secret"}, creds_file)
-      creds_file.flush()
+    with tempfile.TemporaryDirectory() as tmpdir:
+      creds_file = Path(tmpdir) / "antigravity-credentials.json"
+      creds_file.write_text(json.dumps({
+        "client_id": "file-id",
+        "client_secret": "file-secret",
+      }), encoding="utf-8")
 
       with patch.dict("os.environ", {
         "ANTIGRAVITY_CLIENT_ID": "env-id",  # only one set
-        "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
+        "HERMES_HOME": tmpdir,
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("file-id", "file-secret"))
 
   def test_external_file_supports_antigravity_json_keys(self):
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
-      json.dump({
+    with tempfile.TemporaryDirectory() as tmpdir:
+      creds_file = Path(tmpdir) / "antigravity-credentials.json"
+      creds_file.write_text(json.dumps({
         "ANTIGRAVITY_CLIENT_ID": "file-id",
         "ANTIGRAVITY_CLIENT_SECRET": "file-secret",
-      }, creds_file)
-      creds_file.flush()
+      }), encoding="utf-8")
 
       with patch.dict("os.environ", {
-        "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
+        "HERMES_HOME": tmpdir,
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("file-id", "file-secret"))
 
   def test_malformed_credentials_file_returns_empty(self):
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
-      creds_file.write("{not valid json")
-      creds_file.flush()
+    with tempfile.TemporaryDirectory() as tmpdir:
+      creds_file = Path(tmpdir) / "antigravity-credentials.json"
+      creds_file.write_text("{not valid json", encoding="utf-8")
 
       with patch.dict("os.environ", {
-        "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
+        "HERMES_HOME": tmpdir,
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("", ""))
 
   def test_non_dict_credentials_file_returns_empty(self):
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
-      json.dump(["client_id", "client_secret"], creds_file)
+    with tempfile.TemporaryDirectory() as tmpdir:
+      creds_file = Path(tmpdir) / "antigravity-credentials.json"
+      creds_file.write_text(json.dumps(["client_id", "client_secret"]), encoding="utf-8")
+
+      with patch.dict("os.environ", {
+        "HERMES_HOME": tmpdir,
+      }, clear=True):
+        self.assertEqual(resolve_oauth_credentials(), ("", ""))
+
+  def test_arbitrary_credentials_file_env_is_ignored(self):
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file, tempfile.TemporaryDirectory() as tmpdir:
+      json.dump({"client_id": "file-id", "client_secret": "file-secret"}, creds_file)
       creds_file.flush()
 
       with patch.dict("os.environ", {
+        "HERMES_HOME": tmpdir,
         "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("", ""))
