@@ -181,6 +181,65 @@ class TestHermesMigrationIntegration(unittest.TestCase):
                 / "plugin.yaml"
             ).exists())
 
+    def test_resolve_hermes_python_from_bash_launcher(self):
+        from antigravity_auth.install_plugins import resolve_hermes_python
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            python = root / "hermes-agent" / "venv" / "bin" / "python3"
+            hermes_venv_bin = root / "hermes-agent" / "venv" / "bin" / "hermes"
+            launcher = root / "bin" / "hermes"
+            python.parent.mkdir(parents=True)
+            launcher.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+            hermes_venv_bin.write_text(f"#!{python}\n", encoding="utf-8")
+            launcher.write_text(f'#!/usr/bin/env bash\nexec "{hermes_venv_bin}" "$@"\n', encoding="utf-8")
+
+            self.assertEqual(resolve_hermes_python(str(launcher)), python)
+
+    def test_resolve_hermes_python_from_version_output(self):
+        from antigravity_auth.install_plugins import resolve_hermes_python
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            project = root / "hermes-agent"
+            python = project / "venv" / "bin" / "python3"
+            launcher = root / "bin" / "hermes"
+            python.parent.mkdir(parents=True)
+            launcher.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+            launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            result = subprocess.CompletedProcess(
+                [str(launcher), "--version"],
+                0,
+                stdout=f"Hermes Agent v0.16.0\nProject: {project}\nPython: 3.11.15\n",
+                stderr="",
+            )
+
+            with patch("antigravity_auth.install_plugins.subprocess.run", return_value=result):
+                self.assertEqual(resolve_hermes_python(str(launcher)), python)
+
+    def test_install_package_targets_hermes_python(self):
+        from antigravity_auth.install_plugins import install_package_in_hermes_python
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            python = Path(tmpdir) / "hermes-agent" / "venv" / "bin" / "python3"
+            python.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+
+            with patch("antigravity_auth.install_plugins.subprocess.run") as run:
+                installed = install_package_in_hermes_python(python, "example-package")
+
+            self.assertTrue(installed)
+            run.assert_called_once_with([
+                str(python.resolve()),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "example-package",
+            ], check=True)
+
 
 if __name__ == "__main__":
     unittest.main()
