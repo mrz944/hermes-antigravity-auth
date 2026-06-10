@@ -299,8 +299,8 @@ The `antigravity_auth/_credentials.py` file is gitignored and blocked from wheel
 
 | Error | Likely Cause | Fix |
 |-------|--------------|-----|
-| Provider not found | Model provider plugin not installed | Copy `plugins/model-providers/antigravity` to `~/.hermes/plugins/model-providers/` |
-| `oauth_external` unsupported | Provider did not resolve to `google-gemini-cli` | Reinstall the current Antigravity provider plugin |
+| Provider not found | Model provider plugin not installed | Run `hermes-antigravity-install` to repair wrappers and the Hermes Python package |
+| `oauth_external` unsupported | Provider did not resolve to `google-gemini-cli` | Run `hermes-antigravity-install`, then restart Hermes |
 | Missing credentials | Login did not complete or auth store is stale | Run `hermes antigravity login` |
 | 429 rate limit | Current account is rate-limited | Add accounts or wait for cooldown |
 | Schema field rejected | Tool schema contains unsupported JSON Schema fields | `transform/schema.py` strips or converts unsupported fields |

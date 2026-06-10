@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 class TestPluginContract(unittest.TestCase):
   def test_wrapper_import_error_is_actionable(self):
+    from antigravity_auth.package_info import INSTALL_COMMAND, PACKAGE_SPEC
     from antigravity_auth.plugin_contract import wrapper_import_error
 
     error = wrapper_import_error(
@@ -20,8 +21,8 @@ class TestPluginContract(unittest.TestCase):
     self.assertIn("Hermes Antigravity file-plugin wrapper failed to load", message)
     self.assertIn("Wrapper: /tmp/antigravity-wrapper/__init__.py", message)
     self.assertIn(f"Python: {Path(sys.executable).expanduser()}", message)
-    self.assertIn("hermes-antigravity-install", message)
-    self.assertIn("pip install --upgrade hermes-antigravity-auth[yaml]", message)
+    self.assertIn(INSTALL_COMMAND, message)
+    self.assertIn(f"pip install --upgrade {PACKAGE_SPEC}", message)
 
   def test_load_cli_register_wraps_import_failure(self):
     from antigravity_auth.plugin_contract import load_cli_register
@@ -66,21 +67,34 @@ class TestPluginContract(unittest.TestCase):
 
   def test_generated_wrappers_match_checked_in_file_plugins(self):
     from antigravity_auth.install_plugins import install_plugins
+    from antigravity_auth.package_info import __version__
 
     repo_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory() as tmpdir:
       install_plugins(Path(tmpdir))
       generated_cli = Path(tmpdir) / "plugins" / "antigravity-cli" / "__init__.py"
+      generated_cli_yaml = Path(tmpdir) / "plugins" / "antigravity-cli" / "plugin.yaml"
       generated_provider = Path(tmpdir) / "plugins" / "model-providers" / "antigravity" / "__init__.py"
+      generated_provider_yaml = Path(tmpdir) / "plugins" / "model-providers" / "antigravity" / "plugin.yaml"
 
       self.assertEqual(
         generated_cli.read_text(encoding="utf-8"),
         (repo_root / "plugins" / "antigravity_tools" / "__init__.py").read_text(encoding="utf-8"),
       )
       self.assertEqual(
+        generated_cli_yaml.read_text(encoding="utf-8"),
+        (repo_root / "plugins" / "antigravity_tools" / "plugin.yaml").read_text(encoding="utf-8"),
+      )
+      self.assertEqual(
         generated_provider.read_text(encoding="utf-8"),
         (repo_root / "plugins" / "model-providers" / "antigravity" / "__init__.py").read_text(encoding="utf-8"),
       )
+      self.assertEqual(
+        generated_provider_yaml.read_text(encoding="utf-8"),
+        (repo_root / "plugins" / "model-providers" / "antigravity" / "plugin.yaml").read_text(encoding="utf-8"),
+      )
+      self.assertIn(f"version: {__version__}", generated_cli_yaml.read_text(encoding="utf-8"))
+      self.assertIn(f"version: {__version__}", generated_provider_yaml.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

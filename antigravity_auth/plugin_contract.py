@@ -20,8 +20,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-
-INSTALL_COMMAND = "hermes-antigravity-install"
+from .package_info import INSTALL_COMMAND, python_install_command
 
 
 def wrapper_import_error(wrapper_path: str, target: str, exc: BaseException) -> RuntimeError:
@@ -36,8 +35,9 @@ def wrapper_import_error(wrapper_path: str, target: str, exc: BaseException) -> 
     f"Cause: {type(exc).__name__}: {exc}\n\n"
     "This usually means Hermes is running a different Python environment than "
     "the one where hermes-antigravity-auth was installed.\n"
-    f"Fix: run `{INSTALL_COMMAND}` from this checkout, or install explicitly with:\n"
-    f"  {python} -m pip install --upgrade hermes-antigravity-auth[yaml]\n"
+    f"Fix: run `{INSTALL_COMMAND}`. If the console script is unavailable, "
+    "repair this Hermes Python explicitly with:\n"
+    f"  {python_install_command(str(python))}\n"
   )
 
 

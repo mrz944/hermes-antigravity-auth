@@ -13,6 +13,7 @@ from importlib import metadata
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from .package_info import GIT_PACKAGE_SPEC, __version__
 from .storage import get_hermes_home
 
 
@@ -36,9 +37,9 @@ except Exception as exc:
 register = load_cli_register(__file__)
 '''
 
-CLI_YAML = """name: antigravity-cli
+CLI_YAML = f"""name: antigravity-cli
 kind: standalone
-version: 1.6.0
+version: {__version__}
 description: Google Antigravity CLI utilities - login, quotas, account management
 author: NoeFabris & Reedtrullz
 """
@@ -63,9 +64,9 @@ except Exception as exc:
 globals().update(load_provider_namespace(__file__))
 '''
 
-PROVIDER_YAML = """name: antigravity
+PROVIDER_YAML = f"""name: antigravity
 kind: model-provider
-version: 1.6.0
+version: {__version__}
 description: Google Antigravity OAuth via Hermes Cloud Code transport
 author: NoeFabris & Reedtrullz
 """
@@ -194,7 +195,7 @@ def _current_package_spec() -> str:
       suffix = f"@{commit}" if commit else ""
       return f"hermes-antigravity-auth[yaml] @ git+{url}{suffix}"
 
-  return "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+  return GIT_PACKAGE_SPEC
 
 
 def _pip_install_args(package_spec: str) -> list[str]:

@@ -37,28 +37,22 @@ Install the hermes-antigravity-auth plugin for Hermes Agent by following the ins
 
 **Option B: Manual setup**
 
-### 1. Install from source or Git
+### 1. Install from Git and run the installer
 
-The current supported install path is this GitHub repository or a local source
-checkout. A PyPI package may not be published yet; if one exists in the
-future, use the same credential, plugin-install, and authentication steps below.
+The canonical install and update path is the Git package plus
+`hermes-antigravity-install`. The installer resolves the Python environment used
+by the `hermes` launcher, installs this package into that environment, and writes
+the Hermes file-plugin wrappers.
 
 ```bash
-pip install "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+hermes-antigravity-install
 ```
 
 The `[yaml]` extra installs PyYAML. Keep it for normal Hermes use whenever you
 have `~/.hermes/config.yaml`; without PyYAML the plugin runs with defaults and
 `hermes antigravity doctor` reports a WARN explaining how to install YAML
 support.
-
-Or clone and install locally:
-
-```bash
-git clone https://github.com/Reedtrullz/hermes-antigravity-auth.git
-cd hermes-antigravity-auth
-pip install -e ".[dev,yaml]"
-```
 
 ### 2. Provide OAuth client credentials
 
@@ -88,27 +82,11 @@ chmod 600 ~/.hermes/antigravity-credentials.json
 Do not place real credentials in `antigravity_auth/_credentials.py`; local files
 inside the package tree are refused by package builds to prevent wheel/sdist leaks.
 
-### 3. Install the Hermes plugins
+### 3. Verify the Hermes plugins
 
-Install the CLI and model-provider wrappers into your Hermes plugins directory:
-
-```bash
-hermes-antigravity-install
-```
-
-If the script is not on your shell `PATH`, run the module directly with the Python environment where the package is installed:
-
-```bash
-python -m antigravity_auth.install_plugins
-```
-
-From a source checkout, copying the plugin directories also works:
-
-```bash
-# From the repo root:
-cp -r plugins/model-providers/antigravity ~/.hermes/plugins/model-providers/
-cp -r plugins/antigravity_tools ~/.hermes/plugins/antigravity-cli/
-```
+`hermes-antigravity-install` is the supported way to install or repair the CLI
+and model-provider wrappers. Do not copy plugin directories by hand; copied
+wrappers can drift from the package installed in Hermes' Python.
 
 ### 4. Enable the CLI plugin
 
@@ -156,9 +134,10 @@ In `hermes model` and the in-agent `/model` picker, Antigravity appears as
 
 ### Step-by-Step Instructions
 
-1. Install from GitHub or a local checkout:
+1. Install from GitHub and run the installer:
    ```bash
-   pip install "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+   python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+   hermes-antigravity-install
    ```
 
 2. Provide OAuth client credentials before login. Create a Google OAuth desktop
@@ -172,21 +151,9 @@ In `hermes model` and the in-agent `/model` picker, Antigravity appears as
    Python package tree. Do not place real credentials in
    `antigravity_auth/_credentials.py`.
 
-3. Install the Hermes plugin wrappers:
-   ```bash
-   hermes-antigravity-install
-   ```
-
-   If that script is not on `PATH`, use:
-   ```bash
-   python -m antigravity_auth.install_plugins
-   ```
-
-   Or copy the source plugin directories to the Hermes plugins directory:
-   ```bash
-   cp -r plugins/model-providers/antigravity ~/.hermes/plugins/model-providers/
-   cp -r plugins/antigravity_tools ~/.hermes/plugins/antigravity-cli/
-   ```
+3. Use `hermes-antigravity-install` for wrapper install or repair. Do not copy
+   plugin directories by hand; the installer keeps wrapper files and the Hermes
+   Python package in sync.
 
 4. Enable the CLI plugin in `~/.hermes/config.yaml`:
    ```yaml

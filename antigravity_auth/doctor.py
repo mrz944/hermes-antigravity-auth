@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .package_info import INSTALL_COMMAND, PACKAGE_SPEC, python_install_command
 from .redaction import redact_secret_text, redact_secrets
 from .storage import (
   _probe_process_file_lock,
@@ -55,10 +56,10 @@ def _check_entrypoint() -> DoctorRow:
       "WARN",
       "plugin entrypoint",
       "antigravity-cli entrypoint was not found in installed package metadata",
-      "Run pip install -e . or reinstall hermes-antigravity-auth in the Python environment used by Hermes.",
+      f"Run {INSTALL_COMMAND}; it installs {PACKAGE_SPEC} into the Python environment used by Hermes.",
     )
   except Exception as exc:
-    return _row("WARN", "plugin entrypoint", f"could not inspect entry points: {exc}", "Verify package installation with pip show hermes-antigravity-auth.")
+    return _row("WARN", "plugin entrypoint", f"could not inspect entry points: {exc}", f"Verify package installation with {python_install_command('python')}.")
 
 
 def _check_hermes_adapter() -> list[DoctorRow]:
@@ -264,7 +265,7 @@ def _check_config() -> list[DoctorRow]:
       except Exception as exc:
         rows.append(_row("FAIL", "config.yaml", f"YAML parse failed: {exc}", "Fix the YAML syntax and rerun doctor."))
     except Exception:
-      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", "Install with pip install 'hermes-antigravity-auth[yaml]' or pip install pyyaml."))
+      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", f"Run {INSTALL_COMMAND}; normal installs include {PACKAGE_SPEC}."))
   else:
     rows.append(_row("WARN", "config.yaml", f"{config_path} is missing", "Create config.yaml if you need plugin settings; defaults are usable."))
   try:
