@@ -380,6 +380,7 @@ hermes antigravity list        # List accounts
 hermes antigravity set-project <email_or_index> <project_id>
 hermes antigravity check       # Check quota status
 hermes antigravity doctor      # Diagnose install/config/auth state
+hermes antigravity selftest    # Offline transform/package round-trip smoke
 ```
 
 ---
@@ -425,11 +426,11 @@ hermes -z "Hello" --provider ag --model gemini-3.5-flash-high
 hermes -z "Hello" --provider ag --model gemini-3-flash-preview
 ```
 
-If Hermes doesn't see the antigravity provider at all, verify the plugin is installed:
+If Hermes doesn't see the antigravity provider at all, verify the offline
+transform/package path:
 
 ```bash
-ls ~/.hermes/plugins/model-providers/antigravity/
-# Should show: __init__.py  plugin.yaml
+hermes antigravity selftest
 ```
 
 ### Auth Issues

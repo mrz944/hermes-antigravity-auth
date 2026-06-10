@@ -26,7 +26,7 @@ The plugin authenticates Google accounts, stores Antigravity account state under
 
 ```
 antigravity_auth/
-├── cli.py                    # hermes antigravity login/accounts/list/delete/check/quota
+├── cli.py                    # hermes antigravity login/accounts/list/delete/check/quota/selftest
 ├── hermes_plugin.py          # Hermes entry point: registers CLI, interceptor, recovery, tools, watchdog
 ├── hermes_provider_plugin.py # Branded provider aliases for Hermes model discovery
 ├── interceptor.py            # HTTP interceptor: monkey-patches GeminiCloudCodeClient, httpx event hooks

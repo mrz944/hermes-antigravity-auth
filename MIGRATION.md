@@ -107,6 +107,7 @@ plugins:
 ```bash
 hermes antigravity login    # Authenticate with Google
 hermes antigravity quota    # Check remaining quota
+hermes antigravity selftest # Offline transform/package round-trip smoke
 ```
 
 ---

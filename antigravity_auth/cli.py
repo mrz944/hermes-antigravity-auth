@@ -1047,6 +1047,10 @@ def setup_cli(parser):
     subparsers.add_parser("check", help="Verify accounts and show quota status")
     subparsers.add_parser("doctor", help="Run Antigravity installation and auth diagnostics")
     subparsers.add_parser("status", help="Show interceptor status and model availability")
+    subparsers.add_parser(
+        "selftest",
+        help="Run offline Antigravity transform and packaging self-test",
+    )
 
     delete_parser = subparsers.add_parser("delete", help="Delete a saved account")
     delete_parser.add_argument("email_or_index", help="Email address or account index to remove")
@@ -1081,6 +1085,10 @@ def handle_cli(args):
             print_doctor()
         elif args.action == "status":
             print_interceptor_status()
+        elif args.action == "selftest":
+            from .selftest import print_selftest
+            if not print_selftest():
+                sys.exit(1)
         else:
             interactive_accounts_menu()
     except KeyboardInterrupt:

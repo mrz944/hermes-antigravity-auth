@@ -86,6 +86,25 @@ class TestCli(unittest.TestCase):
         output = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
         self.assertIn("Credentials not saved", output)
 
+    def test_handle_cli_runs_selftest(self):
+        args = MagicMock()
+        args.action = "selftest"
+
+        with patch("antigravity_auth.selftest.print_selftest", return_value=True) as print_selftest:
+            cli_module.handle_cli(args)
+
+        print_selftest.assert_called_once_with()
+
+    def test_handle_cli_exits_nonzero_when_selftest_fails(self):
+        args = MagicMock()
+        args.action = "selftest"
+
+        with patch("antigravity_auth.selftest.print_selftest", return_value=False):
+            with self.assertRaises(SystemExit) as ctx:
+                cli_module.handle_cli(args)
+
+        self.assertEqual(ctx.exception.code, 1)
+
     def test_run_login_flow_manual_code_only_uses_returned_state(self):
         auth_data = {
             "url": "https://auth",
