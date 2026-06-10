@@ -173,6 +173,33 @@ class TestHermesPluginRegister(unittest.TestCase):
     self.assertNotIn("google-gemini-cli", fake_models._SLUG_TO_GROUP)
     self.assertIn("gemini-3.5-flash-high", fake_models._PROVIDER_MODELS["google-gemini-cli"])
 
+  def test_provider_plugin_skips_picker_patch_when_private_symbols_missing(self):
+    import antigravity_auth.hermes_provider_plugin as provider_mod
+
+    fake_models = types.ModuleType("hermes_cli.models")
+    fake_models._PROVIDER_MODELS = {"google-gemini-cli": ["old-model"]}
+    fake_models._PROVIDER_LABELS = {"google-gemini-cli": "Google Gemini (OAuth)"}
+
+    fake_hermes_cli = types.ModuleType("hermes_cli")
+    fake_hermes_cli.models = fake_models
+
+    original_diagnostics = list(provider_mod._PROVIDER_DIAGNOSTICS)
+    provider_mod._PROVIDER_DIAGNOSTICS.clear()
+    try:
+      with patch.dict(sys.modules, {
+          "hermes_cli": fake_hermes_cli,
+          "hermes_cli.models": fake_models,
+      }), \
+          patch.object(provider_mod, "_set_oauth_env_from_credentials"):
+        provider_mod._patch_hermes_model_picker()
+
+      self.assertEqual(fake_models._PROVIDER_MODELS["google-gemini-cli"], ["old-model"])
+      details = "\n".join(item["detail"] for item in provider_mod.get_provider_diagnostics())
+      self.assertIn("_PROVIDER_ALIASES", details)
+      self.assertIn("ProviderEntry", details)
+    finally:
+      provider_mod._PROVIDER_DIAGNOSTICS[:] = original_diagnostics
+
   def test_antigravity_models_include_claude(self):
     from antigravity_auth.hermes_provider_plugin import ANTIGRAVITY_MODELS
     claude_models = [m for m in ANTIGRAVITY_MODELS if "claude" in m.lower()]

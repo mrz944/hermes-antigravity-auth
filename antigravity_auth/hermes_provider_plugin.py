@@ -9,6 +9,13 @@ import threading
 import time
 from typing import Any
 
+from .hermes_compat import (
+  detect_hermes_features,
+  diagnostics_from_features,
+  has_grouping_features,
+  has_required_model_picker_features,
+)
+
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -31,6 +38,16 @@ def _record(status: str, check: str, detail: str, fix: str = "") -> None:
 def get_provider_diagnostics() -> list[dict[str, str]]:
   """Return provider-load diagnostics recorded in this process."""
   return [dict(item) for item in _PROVIDER_DIAGNOSTICS]
+
+
+def _record_hermes_feature_diagnostics() -> None:
+  for item in diagnostics_from_features(detect_hermes_features()):
+    _record(
+      str(item.get("status", "WARN")),
+      str(item.get("check", "Hermes compatibility")),
+      str(item.get("detail", "")),
+      str(item.get("fix", "")),
+    )
 
 
 def ensure_provider_loaded() -> bool:
@@ -187,7 +204,17 @@ def _patch_hermes_model_picker() -> None:
       "WARN",
       "model picker patch",
       f"could not import hermes_cli.models: {exc}",
-      "Run inside Hermes Agent or use a compatible Hermes version.",
+      "Standalone provider fallback remains available; picker branding patches are skipped.",
+    )
+    return
+
+  supported, missing = has_required_model_picker_features(models)
+  if not supported:
+    _record(
+      "WARN",
+      "model picker patch",
+      "skipped because hermes_cli.models is missing " + ", ".join(missing),
+      "Standalone provider fallback remains available; upgrade Hermes for picker branding.",
     )
     return
 
@@ -248,7 +275,7 @@ def _patch_hermes_model_picker() -> None:
         "Antigravity may still work but may keep the native Google display label.",
       )
 
-    groups_ready = hasattr(models, "PROVIDER_GROUPS") and hasattr(models, "_SLUG_TO_GROUP")
+    groups_ready = has_grouping_features(models)
     if groups_ready:
       try:
         group_label, members = models.PROVIDER_GROUPS.get("google", ("Google Gemini", []))
@@ -306,10 +333,13 @@ except Exception as exc:
     f"register_provider failed for google-gemini-cli: {exc}",
     "Run hermes antigravity doctor inside Hermes and verify provider plugin compatibility.",
   )
+_record_hermes_feature_diagnostics()
 _patch_hermes_model_picker()
 
 try:
   from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
+  if not hasattr(PROVIDER_REGISTRY, "get") or not callable(ProviderConfig):
+    raise TypeError("hermes_cli.auth registry does not expose PROVIDER_REGISTRY.get and callable ProviderConfig")
 
   target = PROVIDER_REGISTRY.get("google-gemini-cli")
   if target is None:
