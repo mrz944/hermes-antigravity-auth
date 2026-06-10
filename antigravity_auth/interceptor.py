@@ -29,6 +29,8 @@ _ORIGINAL_WRAP_CODE_ASSIST = None
 _ORIGINAL_ENSURE_PROJECT_CONTEXT = None
 
 _TRACE_DIR = None
+_REQUEST_HOOK_PROCESSED = "antigravity_request_hook_processed"
+_RESPONSE_HOOK_PROCESSED = "antigravity_response_hook_processed"
 
 
 def _trace(event: str, **kwargs: Any) -> None:
@@ -735,6 +737,11 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
     except Exception:
         pass
 
+    if request.extensions.get(_REQUEST_HOOK_PROCESSED):
+        _trace("hook-skip", reason="already-processed")
+        return
+    request.extensions[_REQUEST_HOOK_PROCESSED] = True
+
     if "cloudcode-pa" not in str(request.url):
         _trace("hook-skip", reason="url-no-cloudcode-pa")
         return
@@ -831,13 +838,17 @@ def _antigravity_request_hook(request: httpx.Request) -> None:
 
 
 def _antigravity_response_hook(response: httpx.Response) -> None:
-    from .config import get_config
-    config = get_config()
-    model = _request_model_from_response(response)
     try:
         request_extensions = response.request.extensions
     except Exception:
         request_extensions = {}
+    if request_extensions.get(_RESPONSE_HOOK_PROCESSED):
+        _trace("response-hook-skip", reason="already-processed")
+        return
+    request_extensions[_RESPONSE_HOOK_PROCESSED] = True
+    from .config import get_config
+    config = get_config()
+    model = _request_model_from_response(response)
     family = request_extensions.get("antigravity_model_family") or _model_family_for_model(model)
     header_style = request_extensions.get(
         "antigravity_header_style"
@@ -1152,6 +1163,8 @@ def _clone_request_for_retry(request: httpx.Request) -> httpx.Request | None:
     except Exception:
         return None
     retry_extensions = dict(request.extensions)
+    retry_extensions.pop(_REQUEST_HOOK_PROCESSED, None)
+    retry_extensions.pop(_RESPONSE_HOOK_PROCESSED, None)
     retry_extensions["antigravity_retry_attempted"] = True
     retry_extensions["antigravity_retry_original_status"] = retry_extensions.get(
         "antigravity_retry_original_status"

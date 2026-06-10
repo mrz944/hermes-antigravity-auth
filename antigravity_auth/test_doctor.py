@@ -118,6 +118,46 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(lock_rows[0].status, "WARN")
         self.assertIn("lock acquisition failed", lock_rows[0].detail)
 
+    def test_doctor_account_store_reports_malformed_private_json(self):
+        from antigravity_auth.doctor import _check_account_store
+        from antigravity_auth.storage import get_accounts_json_path
+
+        path = get_accounts_json_path()
+        path.write_text("{not-json", encoding="utf-8")
+        os.chmod(path, 0o600)
+
+        rows = _check_account_store()
+        store_rows = [row for row in rows if row.check == "account store"]
+        permission_rows = [row for row in rows if row.check == "account store permissions"]
+
+        self.assertEqual(len(store_rows), 1)
+        self.assertEqual(store_rows[0].status, "FAIL")
+        self.assertIn("could not parse", store_rows[0].detail)
+        self.assertEqual(len(permission_rows), 1)
+        self.assertEqual(permission_rows[0].status, "PASS")
+
+    def test_doctor_account_store_reports_permissions_separately(self):
+        from antigravity_auth.doctor import _check_account_store
+        from antigravity_auth.storage import save_accounts, get_accounts_json_path
+
+        save_accounts({
+            "version": 4,
+            "accounts": [],
+            "activeIndex": 0,
+            "cursor": 0,
+            "activeIndexByFamily": {"claude": 0, "gemini": 0},
+        })
+        path = get_accounts_json_path()
+        os.chmod(path, 0o644)
+
+        rows = _check_account_store()
+        store_rows = [row for row in rows if row.check == "account store"]
+        permission_rows = [row for row in rows if row.check == "account store permissions"]
+
+        self.assertEqual(store_rows[0].status, "PASS")
+        self.assertEqual(permission_rows[0].status, "WARN")
+        self.assertIn("permissions", permission_rows[0].detail)
+
     def test_doctor_surfaces_provider_diagnostics(self):
         from antigravity_auth import hermes_provider_plugin
         from antigravity_auth.doctor import _check_provider_registration

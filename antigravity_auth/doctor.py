@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .package_info import INSTALL_COMMAND, PACKAGE_SPEC, python_install_command
+from .package_info import GIT_PACKAGE_SPEC, INSTALL_COMMAND, python_install_command
 from .redaction import redact_secret_text, redact_secrets
 from .storage import (
   _probe_process_file_lock,
@@ -56,7 +56,7 @@ def _check_entrypoint() -> DoctorRow:
       "WARN",
       "plugin entrypoint",
       "antigravity-cli entrypoint was not found in installed package metadata",
-      f"Run {INSTALL_COMMAND}; it installs {PACKAGE_SPEC} into the Python environment used by Hermes.",
+      f"Run {INSTALL_COMMAND}; it installs {GIT_PACKAGE_SPEC} into the Python environment used by Hermes.",
     )
   except Exception as exc:
     return _row("WARN", "plugin entrypoint", f"could not inspect entry points: {exc}", f"Verify package installation with {python_install_command('python')}.")
@@ -215,21 +215,47 @@ def _check_account_store_locking() -> DoctorRow:
   )
 
 
-def _check_account_store() -> DoctorRow:
+def _check_account_store() -> list[DoctorRow]:
   path = get_accounts_json_path()
   if not path.exists():
-    return _row("WARN", "account store", f"{path} does not exist", "Run hermes antigravity login.")
+    return [_row("WARN", "account store", f"{path} does not exist", "Run hermes antigravity login.")]
   mode = _path_mode(path)
-  if mode is not None and mode & 0o077:
-    return _row("WARN", "account store", f"{path} permissions are {oct(mode)}", f"Run chmod 600 {path}.")
+  rows: list[DoctorRow] = []
   try:
-    data = load_accounts()
-    accounts = data.get("accounts", [])
-    if not isinstance(accounts, list):
-      return _row("FAIL", "account store", "accounts field is not a list", "Back up and recreate antigravity-accounts.json with hermes antigravity login.")
-    return _row("PASS", "account store", f"{len(accounts)} account(s), permissions {oct(mode) if mode is not None else 'unknown'}")
+    with open(path, "r", encoding="utf-8") as f:
+      data = json.load(f)
   except Exception as exc:
-    return _row("FAIL", "account store", f"could not parse account store: {exc}", "Back up and recreate antigravity-accounts.json with hermes antigravity login.")
+    rows.append(_row(
+      "FAIL",
+      "account store",
+      f"could not parse {path}: {exc}",
+      "Back up and recreate antigravity-accounts.json with hermes antigravity login.",
+    ))
+  else:
+    if not isinstance(data, dict):
+      rows.append(_row(
+        "FAIL",
+        "account store",
+        "top-level JSON value is not an object",
+        "Back up and recreate antigravity-accounts.json with hermes antigravity login.",
+      ))
+    else:
+      accounts = data.get("accounts", [])
+      if not isinstance(accounts, list):
+        rows.append(_row(
+          "FAIL",
+          "account store",
+          "accounts field is not a list",
+          "Back up and recreate antigravity-accounts.json with hermes antigravity login.",
+        ))
+      else:
+        rows.append(_row("PASS", "account store", f"{len(accounts)} account(s)"))
+
+  if mode is not None and mode & 0o077:
+    rows.append(_row("WARN", "account store permissions", f"{path} permissions are {oct(mode)}", f"Run chmod 600 {path}."))
+  else:
+    rows.append(_row("PASS", "account store permissions", f"permissions {oct(mode) if mode is not None else 'unknown'}"))
+  return rows
 
 
 def _check_auth_files() -> list[DoctorRow]:
@@ -265,7 +291,7 @@ def _check_config() -> list[DoctorRow]:
       except Exception as exc:
         rows.append(_row("FAIL", "config.yaml", f"YAML parse failed: {exc}", "Fix the YAML syntax and rerun doctor."))
     except Exception:
-      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", f"Run {INSTALL_COMMAND}; normal installs include {PACKAGE_SPEC}."))
+      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", f"Run {INSTALL_COMMAND}; normal installs include {GIT_PACKAGE_SPEC}."))
   else:
     rows.append(_row("WARN", "config.yaml", f"{config_path} is missing", "Create config.yaml if you need plugin settings; defaults are usable."))
   try:
@@ -348,7 +374,7 @@ def run_doctor() -> list[DoctorRow]:
   rows.append(_check_retry_behavior())
   rows.extend(_check_provider_registration())
   rows.append(_check_account_store_locking())
-  rows.append(_check_account_store())
+  rows.extend(_check_account_store())
   rows.extend(_check_auth_files())
   rows.extend(_check_config())
   rows.append(_check_oauth_client_credentials())

@@ -1169,6 +1169,68 @@ class TestRetryWrapper(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertEqual(len(calls), 1)
 
+    def test_retry_clone_clears_hook_processed_markers(self):
+        from antigravity_auth.interceptor import (
+            _REQUEST_HOOK_PROCESSED,
+            _RESPONSE_HOOK_PROCESSED,
+            _clone_request_for_retry,
+        )
+
+        req = self._make_request()
+        req.extensions[_REQUEST_HOOK_PROCESSED] = True
+        req.extensions[_RESPONSE_HOOK_PROCESSED] = True
+
+        retry = _clone_request_for_retry(req)
+
+        self.assertIsNotNone(retry)
+        assert retry is not None
+        self.assertTrue(retry.extensions["antigravity_retry_attempted"])
+        self.assertNotIn(_REQUEST_HOOK_PROCESSED, retry.extensions)
+        self.assertNotIn(_RESPONSE_HOOK_PROCESSED, retry.extensions)
+
+    def test_global_and_wrapped_client_process_hooks_once(self):
+        import antigravity_auth.interceptor as interceptor
+
+        original_send = httpx.Client.send
+        original_post = httpx.Client.post
+        original_global_state = interceptor._GLOBAL_HTTPX_HOOK_INSTALLED
+        client = None
+        config = type("Config", (), {
+            "cli_first": False,
+            "soft_quota_cache_ttl_minutes": "auto",
+            "quota_refresh_interval_minutes": 15,
+            "account_selection_strategy": "sticky",
+            "pid_offset_enabled": False,
+            "soft_quota_threshold_percent": 100,
+            "proactive_token_refresh": False,
+            "switch_on_first_rate_limit": False,
+        })()
+
+        try:
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = False
+            interceptor._install_global_httpx_hook()
+            client = httpx.Client(
+                transport=httpx.MockTransport(lambda request: httpx.Response(500, request=request))
+            )
+            interceptor._wrap_http_client(client)
+            with patch("antigravity_auth.interceptor.get_config", return_value=config), \
+                 patch("antigravity_auth.interceptor._select_request_account", return_value=None) as select_account, \
+                 patch("antigravity_auth.endpoints.mark_endpoint_failed") as mark_endpoint_failed:
+                response = client.post(
+                    "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+                    json={"model": "claude-sonnet-4-6", "request": {"contents": []}},
+                )
+
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(select_account.call_count, 1)
+            self.assertEqual(mark_endpoint_failed.call_count, 1)
+        finally:
+            if client is not None:
+                client.close()
+            httpx.Client.send = original_send
+            httpx.Client.post = original_post
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = original_global_state
+
     def test_wrap_http_client_installs_hooks_once(self):
         from antigravity_auth.interceptor import _antigravity_request_hook, _antigravity_response_hook, _wrap_http_client
 
