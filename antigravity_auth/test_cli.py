@@ -14,6 +14,7 @@ from .cli import (
     delete_account,
     interactive_accounts_menu,
     run_login_flow,
+    set_credentials,
     set_account_project,
 )
 from . import cli as cli_module
@@ -51,6 +52,58 @@ class TestCli(unittest.TestCase):
             with patch("builtins.input", return_value="http://localhost:51121/?code=manual-code&state=state_abc"):
                 success = run_login_flow(project_id="project_123", no_browser=True)
                 self.assertTrue(success)
+
+    def test_run_login_flow_missing_credentials_prints_actionable_message(self):
+        from antigravity_auth.credentials import MissingOAuthCredentialsError
+
+        with patch.object(cli_module, "authorize_antigravity", side_effect=MissingOAuthCredentialsError("missing credentials")), \
+             patch("builtins.print") as mock_print:
+            success = run_login_flow(project_id="project_123", no_browser=True)
+
+        self.assertFalse(success)
+        output = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("missing credentials", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_set_credentials_writes_hermes_credentials_file(self):
+        with patch("builtins.print") as mock_print:
+            success = set_credentials("client-id", "client-secret")
+
+        self.assertTrue(success)
+        path = Path(self.temp_dir.name) / "antigravity-credentials.json"
+        self.assertTrue(path.exists())
+        output = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn(str(path), output)
+        self.assertNotIn("client-secret", output)
+
+    def test_set_credentials_rejects_missing_values_without_secret_output(self):
+        with patch("builtins.input", return_value=""), \
+             patch("getpass.getpass", return_value=""), \
+             patch("builtins.print") as mock_print:
+            success = set_credentials("", "")
+
+        self.assertFalse(success)
+        output = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+        self.assertIn("Credentials not saved", output)
+
+    def test_handle_cli_runs_selftest(self):
+        args = MagicMock()
+        args.action = "selftest"
+
+        with patch("antigravity_auth.selftest.print_selftest", return_value=True) as print_selftest:
+            cli_module.handle_cli(args)
+
+        print_selftest.assert_called_once_with()
+
+    def test_handle_cli_exits_nonzero_when_selftest_fails(self):
+        args = MagicMock()
+        args.action = "selftest"
+
+        with patch("antigravity_auth.selftest.print_selftest", return_value=False):
+            with self.assertRaises(SystemExit) as ctx:
+                cli_module.handle_cli(args)
+
+        self.assertEqual(ctx.exception.code, 1)
 
     def test_run_login_flow_manual_code_only_uses_returned_state(self):
         auth_data = {

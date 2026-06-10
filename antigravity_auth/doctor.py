@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .package_info import INSTALL_COMMAND, PACKAGE_SPEC, python_install_command
 from .redaction import redact_secret_text, redact_secrets
 from .storage import (
   _probe_process_file_lock,
@@ -37,7 +38,7 @@ def _row(status: str, check: str, detail: str, fix: str = "") -> DoctorRow:
 def _path_mode(path: Path) -> int | None:
   try:
     return stat.S_IMODE(path.stat().st_mode)
-  except Exception:
+  except OSError:
     return None
 
 
@@ -55,10 +56,10 @@ def _check_entrypoint() -> DoctorRow:
       "WARN",
       "plugin entrypoint",
       "antigravity-cli entrypoint was not found in installed package metadata",
-      "Run pip install -e . or reinstall hermes-antigravity-auth in the Python environment used by Hermes.",
+      f"Run {INSTALL_COMMAND}; it installs {PACKAGE_SPEC} into the Python environment used by Hermes.",
     )
   except Exception as exc:
-    return _row("WARN", "plugin entrypoint", f"could not inspect entry points: {exc}", "Verify package installation with pip show hermes-antigravity-auth.")
+    return _row("WARN", "plugin entrypoint", f"could not inspect entry points: {exc}", f"Verify package installation with {python_install_command('python')}.")
 
 
 def _check_hermes_adapter() -> list[DoctorRow]:
@@ -91,15 +92,40 @@ def _check_interceptor() -> DoctorRow:
     from . import interceptor
     if interceptor.is_installed():
       return _row("PASS", "interceptor", "interceptor is installed in this process")
+    adapter_error = ""
     try:
       adapter = importlib.import_module("agent.gemini_cloudcode_adapter")
       if hasattr(adapter, "GeminiCloudCodeClient") and hasattr(adapter, "wrap_code_assist_request"):
         return _row("WARN", "interceptor", "interceptor is not installed yet, but Hermes symbols are importable", "Ensure the antigravity-cli plugin is enabled in ~/.hermes/config.yaml and restart Hermes.")
-    except Exception:
-      pass
-    return _row("FAIL", "interceptor", "interceptor is not installed and Hermes adapter symbols are unavailable", "Enable the plugin from within Hermes or install a compatible Hermes build.")
+    except Exception as exc:
+      adapter_error = f": {exc}"
+    return _row("FAIL", "interceptor", f"interceptor is not installed and Hermes adapter symbols are unavailable{adapter_error}", "Enable the plugin from within Hermes or install a compatible Hermes build.")
   except Exception as exc:
     return _row("FAIL", "interceptor", f"could not inspect interceptor: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")
+
+
+def _check_routing_health() -> list[DoctorRow]:
+  try:
+    from . import interceptor
+    health = interceptor.get_routing_health()
+  except Exception as exc:
+    return [_row("FAIL", "routing health", f"could not inspect routing health: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")]
+
+  status = str(health.get("status", "blocked"))
+  row_status = "PASS" if status == "ready" else "WARN" if status == "degraded" else "FAIL"
+  rows = [
+    _row(row_status, "routing health", str(health.get("detail", "")), str(health.get("fix", ""))),
+  ]
+  if health.get("claude_routing_ready"):
+    rows.append(_row("PASS", "Claude routing", "Claude models will route through Antigravity request transforms"))
+  else:
+    rows.append(_row(
+      "FAIL" if status == "blocked" else "WARN",
+      "Claude routing",
+      "Claude models are registered but Antigravity routing is not ready",
+      str(health.get("fix", "Run hermes antigravity status inside Hermes.")),
+    ))
+  return rows
 
 
 def _check_retry_behavior() -> DoctorRow:
@@ -120,6 +146,61 @@ def _check_retry_behavior() -> DoctorRow:
     )
   except Exception as exc:
     return _row("FAIL", "automatic retry", f"could not inspect retry wrapper: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")
+
+
+def _check_provider_registration() -> list[DoctorRow]:
+  try:
+    from . import hermes_provider_plugin
+  except Exception as exc:
+    return [_row(
+      "FAIL",
+      "provider registration",
+      f"could not import antigravity provider plugin: {exc}",
+      "Reinstall hermes-antigravity-auth in the Python environment used by Hermes and rerun doctor.",
+    )]
+
+  rows: list[DoctorRow] = []
+  profile = getattr(hermes_provider_plugin, "antigravity", None)
+  if profile is None:
+    rows.append(_row(
+      "FAIL",
+      "provider profile",
+      "antigravity provider profile object is missing",
+      "Reinstall hermes-antigravity-auth and rerun doctor.",
+    ))
+  else:
+    rows.append(_row(
+      "PASS",
+      "provider profile",
+      f"name={getattr(profile, 'name', 'unknown')}, display={getattr(profile, 'display_name', 'unknown')}",
+    ))
+
+  get_diagnostics = getattr(hermes_provider_plugin, "get_provider_diagnostics", None)
+  if not callable(get_diagnostics):
+    rows.append(_row(
+      "FAIL",
+      "provider diagnostics",
+      "provider plugin does not expose get_provider_diagnostics",
+      "Upgrade hermes-antigravity-auth and rerun doctor.",
+    ))
+    return rows
+
+  diagnostics = get_diagnostics()
+  if not diagnostics:
+    rows.append(_row("WARN", "provider diagnostics", "provider plugin loaded without reporting diagnostics", "Restart Hermes and rerun doctor."))
+    return rows
+
+  for item in diagnostics:
+    if not isinstance(item, dict):
+      rows.append(_row("WARN", "provider diagnostics", f"ignored malformed diagnostic entry: {item!r}"))
+      continue
+    rows.append(_row(
+      str(item.get("status", "WARN")),
+      str(item.get("check", "provider diagnostic")),
+      str(item.get("detail", "")),
+      str(item.get("fix", "")),
+    ))
+  return rows
 
 
 def _check_account_store_locking() -> DoctorRow:
@@ -184,7 +265,7 @@ def _check_config() -> list[DoctorRow]:
       except Exception as exc:
         rows.append(_row("FAIL", "config.yaml", f"YAML parse failed: {exc}", "Fix the YAML syntax and rerun doctor."))
     except Exception:
-      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", "Install with pip install 'hermes-antigravity-auth[yaml]' or pip install pyyaml."))
+      rows.append(_row("WARN", "PyYAML", f"{config_path} exists but PyYAML is not installed", f"Run {INSTALL_COMMAND}; normal installs include {PACKAGE_SPEC}."))
   else:
     rows.append(_row("WARN", "config.yaml", f"{config_path} is missing", "Create config.yaml if you need plugin settings; defaults are usable."))
   try:
@@ -194,6 +275,22 @@ def _check_config() -> list[DoctorRow]:
   except Exception as exc:
     rows.append(_row("FAIL", "config validation", f"could not load config: {exc}", "Fix config.yaml or environment overrides."))
   return rows
+
+
+def _check_oauth_client_credentials() -> DoctorRow:
+  try:
+    from .credentials import credential_file_path, resolve_oauth_credentials
+    client_id, client_secret = resolve_oauth_credentials()
+    if client_id and client_secret:
+      return _row("PASS", "OAuth client credentials", "configured from environment or Hermes Antigravity credential file")
+    return _row(
+      "WARN",
+      "OAuth client credentials",
+      f"not configured; {credential_file_path()} is missing or incomplete and env vars are unset",
+      "Run hermes antigravity set-credentials --client-id <id> --client-secret <secret>.",
+    )
+  except Exception as exc:
+    return _row("FAIL", "OAuth client credentials", f"could not inspect credentials: {exc}", "Run hermes antigravity set-credentials.")
 
 
 def _check_active_refresh() -> DoctorRow:
@@ -247,11 +344,14 @@ def run_doctor() -> list[DoctorRow]:
   rows.append(_check_entrypoint())
   rows.extend(_check_hermes_adapter())
   rows.append(_check_interceptor())
+  rows.extend(_check_routing_health())
   rows.append(_check_retry_behavior())
+  rows.extend(_check_provider_registration())
   rows.append(_check_account_store_locking())
   rows.append(_check_account_store())
   rows.extend(_check_auth_files())
   rows.extend(_check_config())
+  rows.append(_check_oauth_client_credentials())
   rows.append(_check_active_refresh())
   rows.append(_check_model_registry())
   redacted_rows = redact_secrets([row.__dict__ for row in rows])

@@ -1,19 +1,12 @@
 import json
-import sys
+import os
+import stat
 import tempfile
-import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from antigravity_auth.credentials import resolve_oauth_credentials
-
-
-def _mock_bundled_credentials():
-  """Context manager that injects a fake _credentials module so bundled fallback works in CI."""
-  mod = types.ModuleType("antigravity_auth._credentials")
-  mod.ANTIGRAVITY_CLIENT_ID = "bundled-id"
-  mod.ANTIGRAVITY_CLIENT_SECRET = "bundled-secret"
-  return patch.dict(sys.modules, {"antigravity_auth._credentials": mod})
+from antigravity_auth.credentials import resolve_oauth_credentials, write_oauth_credentials
 
 
 class TestCredentials(unittest.TestCase):
@@ -29,7 +22,7 @@ class TestCredentials(unittest.TestCase):
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("env-id", "env-secret"))
 
-  def test_file_takes_precedence_over_bundled(self):
+  def test_file_values_load(self):
     with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
       json.dump({"client_id": "file-id", "client_secret": "file-secret"}, creds_file)
       creds_file.flush()
@@ -64,33 +57,39 @@ class TestCredentials(unittest.TestCase):
       }, clear=True):
         self.assertEqual(resolve_oauth_credentials(), ("file-id", "file-secret"))
 
-  def test_malformed_credentials_file_falls_to_bundled(self):
+  def test_malformed_credentials_file_returns_empty(self):
     with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
       creds_file.write("{not valid json")
       creds_file.flush()
 
-      with _mock_bundled_credentials(), patch.dict("os.environ", {
+      with patch.dict("os.environ", {
         "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
       }, clear=True):
-        cid, csec = resolve_oauth_credentials()
-        self.assertTrue(cid)
-        self.assertTrue(csec)
+        self.assertEqual(resolve_oauth_credentials(), ("", ""))
 
-  def test_non_dict_credentials_file_falls_to_bundled(self):
+  def test_non_dict_credentials_file_returns_empty(self):
     with tempfile.NamedTemporaryFile("w", encoding="utf-8") as creds_file:
       json.dump(["client_id", "client_secret"], creds_file)
       creds_file.flush()
 
-      with _mock_bundled_credentials(), patch.dict("os.environ", {
+      with patch.dict("os.environ", {
         "HERMES_ANTIGRAVITY_CREDENTIALS_FILE": creds_file.name,
       }, clear=True):
-        cid, csec = resolve_oauth_credentials()
-        self.assertTrue(cid)
-        self.assertTrue(csec)
+        self.assertEqual(resolve_oauth_credentials(), ("", ""))
 
-  def test_missing_both_env_and_file_returns_bundled(self):
+  def test_missing_both_env_and_file_returns_empty(self):
     with tempfile.TemporaryDirectory() as tmpdir:
-      with _mock_bundled_credentials(), patch.dict("os.environ", {"HERMES_HOME": tmpdir}, clear=True):
-        cid, csec = resolve_oauth_credentials()
-        self.assertTrue(cid)
-        self.assertTrue(csec)
+      with patch.dict("os.environ", {"HERMES_HOME": tmpdir}, clear=True):
+        self.assertEqual(resolve_oauth_credentials(), ("", ""))
+
+  def test_write_oauth_credentials_uses_private_permissions(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      path = Path(tmpdir) / "nested" / "antigravity-credentials.json"
+      saved = write_oauth_credentials("client-id", "client-secret", path=path)
+
+      self.assertEqual(saved, path)
+      data = json.loads(path.read_text(encoding="utf-8"))
+      self.assertEqual(data["client_id"], "client-id")
+      self.assertEqual(data["client_secret"], "client-secret")
+      self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+      self.assertEqual(stat.S_IMODE(os.stat(path.parent).st_mode), 0o700)

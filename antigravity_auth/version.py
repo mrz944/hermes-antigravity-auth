@@ -9,6 +9,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from .package_info import CANONICAL_INSTALL_COMMAND, __version__
+
 GITHUB_API_URL = "https://api.github.com/repos/Reedtrullz/hermes-antigravity-auth/releases/latest"
 CHECK_INTERVAL_SECONDS = 86400  # 24 hours
 REQUEST_TIMEOUT_SECONDS = 5
@@ -17,24 +19,8 @@ _version_thread: threading.Thread | None = None
 
 
 def _get_installed_version() -> str:
-    """Read version from the installed package metadata."""
-    try:
-        from importlib.metadata import version
-        return version("hermes-antigravity-auth")
-    except Exception:
-        pass
-    # Fallback: read pyproject.toml if running from source checkout
-    try:
-        import tomllib
-        repo_root = Path(__file__).resolve().parent.parent
-        pyproject = repo_root / "pyproject.toml"
-        if pyproject.exists():
-            with open(pyproject, "rb") as f:
-                data = tomllib.load(f)
-            return data.get("project", {}).get("version", "0.0.0")
-    except Exception:
-        pass
-    return "0.0.0"
+    """Read version from the package's single source of truth."""
+    return __version__
 
 
 def _parse_github_tag(tag: str) -> str:
@@ -121,7 +107,7 @@ def _notify_update(installed: str, latest: str) -> None:
     """Print update notification to stderr."""
     print(
         f"\n[antigravity] Update available: v{installed} → v{latest}\n"
-        f"  Run: pip install --upgrade git+https://github.com/Reedtrullz/hermes-antigravity-auth.git\n",
+        f"  Run: {CANONICAL_INSTALL_COMMAND}\n",
         file=sys.stderr,
         flush=True,
     )

@@ -1382,6 +1382,67 @@ def is_installed() -> bool:
     return _PATCHED
 
 
+def get_routing_health() -> dict[str, Any]:
+  """Return structured health for HTTP interception and Claude routing."""
+  adapter_importable = False
+  adapter_symbols: list[str] = []
+  adapter_error = ""
+  try:
+    import agent.gemini_cloudcode_adapter as adapter
+    adapter_importable = True
+    for name in ("GeminiCloudCodeClient", "wrap_code_assist_request"):
+      if hasattr(adapter, name):
+        adapter_symbols.append(name)
+  except Exception as exc:
+    adapter_error = str(exc)
+
+  adapter_ready = adapter_importable and len(adapter_symbols) == 2
+  transform_ready = callable(_inject_tool_call_ids) and callable(_apply_claude_transforms)
+  installed = bool(_PATCHED)
+  global_hook = bool(_GLOBAL_HTTPX_HOOK_INSTALLED)
+  wrap_patch = _ORIGINAL_WRAP_CODE_ASSIST is not None
+
+  if installed and global_hook and adapter_ready and wrap_patch and transform_ready:
+    status = "ready"
+    detail = "interceptor, global HTTP hook, Cloud Code adapter patch, and Claude transforms are active"
+    fix = ""
+  elif not adapter_ready:
+    status = "blocked"
+    missing = [name for name in ("GeminiCloudCodeClient", "wrap_code_assist_request") if name not in adapter_symbols]
+    if adapter_error:
+      detail = f"Cloud Code adapter is unavailable: {adapter_error}"
+    else:
+      detail = "Cloud Code adapter is missing " + ", ".join(missing)
+    fix = "Run inside Hermes Agent with google-gemini-cli Cloud Code support."
+  else:
+    status = "degraded"
+    missing = []
+    if not installed:
+      missing.append("interceptor patch")
+    if not global_hook:
+      missing.append("global HTTP hook")
+    if not wrap_patch:
+      missing.append("Cloud Code request wrapper patch")
+    if not transform_ready:
+      missing.append("Claude transform helpers")
+    detail = "missing " + ", ".join(missing)
+    fix = "Ensure the antigravity-cli plugin is enabled and restart Hermes."
+
+  return {
+    "status": status,
+    "detail": detail,
+    "fix": fix,
+    "interceptor_installed": installed,
+    "global_httpx_hook_installed": global_hook,
+    "cloudcode_adapter_importable": adapter_importable,
+    "cloudcode_adapter_symbols": adapter_symbols,
+    "cloudcode_adapter_error": adapter_error,
+    "cloudcode_wrap_patch_active": wrap_patch,
+    "claude_transforms_available": transform_ready,
+    "claude_routing_ready": status == "ready",
+  }
+
+
 def uninstall() -> bool:
   """Restore original GeminiCloudCodeClient.__init__ and wrap_code_assist_request.
 

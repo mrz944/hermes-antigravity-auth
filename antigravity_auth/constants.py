@@ -2,21 +2,23 @@
 import sys
 
 try:
-    from .credentials import resolve_oauth_credentials
+    from .credentials import MissingOAuthCredentialsError, credential_file_path, resolve_oauth_credentials
 except ImportError:
-    from credentials import resolve_oauth_credentials
+    from credentials import MissingOAuthCredentialsError, credential_file_path, resolve_oauth_credentials
 
 # OAuth client credentials — resolve from environment or external Hermes-home file.
 # Environment variables take per-field priority over file values.
 ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET = resolve_oauth_credentials()
 
-_MISSING_CREDENTIALS_ERROR = (
-    "Antigravity OAuth credentials not found.\n\n"
-    "Options:\n"
-    "  1. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars\n"
-    "  2. Create ~/.hermes/antigravity-credentials.json with client_id/client_secret\n"
-    "  3. Reinstall the package: pip install --force-reinstall git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
-)
+
+def _missing_credentials_error() -> str:
+    return (
+        "Antigravity OAuth credentials not found.\n\n"
+        "Options:\n"
+        "  1. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET env vars\n"
+        "  2. Run hermes antigravity set-credentials --client-id <id> --client-secret <secret>\n"
+        f"  3. Create {credential_file_path()} with client_id/client_secret\n"
+    )
 
 if not ANTIGRAVITY_CLIENT_ID or not ANTIGRAVITY_CLIENT_SECRET:
     _credentials_valid = False
@@ -26,8 +28,11 @@ else:
 
 def require_credentials() -> tuple[str, str]:
     """Return (client_id, client_secret) or raise RuntimeError with instructions."""
+    global ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET, _credentials_valid
+    ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET = resolve_oauth_credentials()
+    _credentials_valid = bool(ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET)
     if not _credentials_valid:
-        raise RuntimeError(_MISSING_CREDENTIALS_ERROR)
+        raise MissingOAuthCredentialsError(_missing_credentials_error())
     return ANTIGRAVITY_CLIENT_ID, ANTIGRAVITY_CLIENT_SECRET
 
 ANTIGRAVITY_REDIRECT_URI = "http://localhost:51121/oauth-callback"

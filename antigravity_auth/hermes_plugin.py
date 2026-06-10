@@ -9,6 +9,27 @@ from .config import get_config
 from .debug import initialize_debug
 
 
+def ensure_provider_loaded() -> None:
+  """Load provider registration in the same process as the CLI plugin."""
+  logger = logging.getLogger(__name__)
+  try:
+    from . import hermes_provider_plugin
+  except Exception as exc:
+    logger.error("Antigravity provider plugin failed to load in CLI process: %s", exc, exc_info=True)
+    raise RuntimeError("Antigravity CLI loaded without a provider; see logs and run hermes antigravity doctor.") from exc
+
+  diagnostics = getattr(hermes_provider_plugin, "get_provider_diagnostics", lambda: [])()
+  for item in diagnostics:
+    status = str(item.get("status", "WARN"))
+    detail = str(item.get("detail", ""))
+    check = str(item.get("check", "provider"))
+    if status == "FAIL":
+      logger.error("Antigravity provider diagnostic failed [%s]: %s", check, detail)
+    elif status == "WARN":
+      logger.warning("Antigravity provider diagnostic warning [%s]: %s", check, detail)
+  logger.info("Antigravity provider plugin loaded in CLI process")
+
+
 def register(ctx):
   """Register Hermes CLI commands when loaded via entry points."""
   ctx.register_cli_command(
@@ -24,6 +45,8 @@ def register(ctx):
     initialize_debug(config.debug, config.debug_tui, config.log_dir)
   except Exception as e:
     logger.warning("Antigravity debug logging initialization failed: %s", e)
+
+  ensure_provider_loaded()
 
   # Activate the HTTP interceptor so all google-gemini-cli requests
   # route through Antigravity's transform pipeline.

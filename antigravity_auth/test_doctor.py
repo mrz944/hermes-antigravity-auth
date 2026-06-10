@@ -79,6 +79,23 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("PASS automatic retry", output)
         self.assertIn("streaming responses cannot be replayed", output)
 
+    def test_doctor_reports_claude_routing_health(self):
+        from antigravity_auth.doctor import _check_routing_health
+
+        with patch("antigravity_auth.interceptor.get_routing_health", return_value={
+            "status": "degraded",
+            "detail": "missing interceptor patch",
+            "fix": "restart Hermes",
+            "claude_routing_ready": False,
+        }):
+            rows = _check_routing_health()
+
+        checks = {row.check: row for row in rows}
+        self.assertEqual(checks["routing health"].status, "WARN")
+        self.assertIn("missing interceptor patch", checks["routing health"].detail)
+        self.assertEqual(checks["Claude routing"].status, "WARN")
+        self.assertIn("restart Hermes", checks["Claude routing"].fix)
+
     def test_doctor_account_store_locking_uses_actual_probe_success(self):
         from antigravity_auth.doctor import run_doctor
 
@@ -100,3 +117,34 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(len(lock_rows), 1)
         self.assertEqual(lock_rows[0].status, "WARN")
         self.assertIn("lock acquisition failed", lock_rows[0].detail)
+
+    def test_doctor_surfaces_provider_diagnostics(self):
+        from antigravity_auth import hermes_provider_plugin
+        from antigravity_auth.doctor import _check_provider_registration
+
+        diagnostics = [{
+            "status": "WARN",
+            "check": "provider aliases",
+            "detail": "could not patch aliases",
+            "fix": "use google-gemini-cli",
+        }]
+
+        with patch.object(hermes_provider_plugin, "get_provider_diagnostics", return_value=diagnostics):
+            rows = _check_provider_registration()
+
+        provider_rows = [row for row in rows if row.check == "provider aliases"]
+        self.assertEqual(len(provider_rows), 1)
+        self.assertEqual(provider_rows[0].status, "WARN")
+        self.assertIn("could not patch aliases", provider_rows[0].detail)
+        self.assertIn("google-gemini-cli", provider_rows[0].fix)
+
+    def test_doctor_reports_missing_oauth_client_credentials(self):
+        from antigravity_auth.doctor import _check_oauth_client_credentials
+
+        with patch.dict("os.environ", {"HERMES_HOME": self.temp_dir.name}, clear=True):
+            row = _check_oauth_client_credentials()
+
+        self.assertEqual(row.status, "WARN")
+        self.assertEqual(row.check, "OAuth client credentials")
+        self.assertIn("not configured", row.detail)
+        self.assertIn("set-credentials", row.fix)

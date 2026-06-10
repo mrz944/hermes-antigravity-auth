@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 
+class MissingOAuthCredentialsError(RuntimeError):
+  """Raised when OAuth client credentials are not configured."""
+
+
 def _strip(value: Any) -> str:
   if not isinstance(value, str):
     return ""
@@ -25,6 +29,11 @@ def _credential_file_path() -> Path:
   if path:
     return Path(path).expanduser()
   return _hermes_home() / "antigravity-credentials.json"
+
+
+def credential_file_path() -> Path:
+  """Return the configured external Antigravity credential file path."""
+  return _credential_file_path()
 
 
 def _load_file_credentials() -> tuple[str, str]:
@@ -45,28 +54,8 @@ def _load_file_credentials() -> tuple[str, str]:
   return client_id, client_secret
 
 
-def _load_bundled_credentials() -> tuple[str, str]:
-  """Load OAuth credentials from the bundled _credentials module (legacy fallback).
-
-  The _credentials.py file is gitignored and not shipped in published wheels,
-  but source/git checkouts may include one with placeholder or dev credentials.
-  This is consulted only after env vars and the external JSON file are both absent.
-  """
-  try:
-    from . import _credentials as _bundled  # type: ignore[attr-defined]
-  except ImportError:
-    try:
-      import _credentials as _bundled  # type: ignore[import-not-found]
-    except ImportError:
-      return "", ""
-  return (
-    _strip(getattr(_bundled, "ANTIGRAVITY_CLIENT_ID", "")),
-    _strip(getattr(_bundled, "ANTIGRAVITY_CLIENT_SECRET", "")),
-  )
-
-
 def resolve_oauth_credentials() -> tuple[str, str]:
-  """Resolve OAuth credentials with precedence: env > JSON file > bundled."""
+  """Resolve OAuth credentials with precedence: env > Hermes credential JSON."""
   env_client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID", "").strip()
   env_client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET", "").strip()
 
@@ -77,4 +66,28 @@ def resolve_oauth_credentials() -> tuple[str, str]:
   if file_client_id and file_client_secret:
     return file_client_id, file_client_secret
 
-  return _load_bundled_credentials()
+  return "", ""
+
+
+def write_oauth_credentials(client_id: str, client_secret: str, path: Path | None = None) -> Path:
+  """Write OAuth credentials to the external Hermes-owned credential file."""
+  clean_client_id = client_id.strip()
+  clean_client_secret = client_secret.strip()
+  if not clean_client_id or not clean_client_secret:
+    raise MissingOAuthCredentialsError("Both client_id and client_secret are required.")
+
+  target = path or _credential_file_path()
+  target.parent.mkdir(parents=True, exist_ok=True)
+  os.chmod(target.parent, 0o700)
+  tmp_path = target.with_name(f"{target.name}.tmp")
+  tmp_path.write_text(
+    json.dumps({
+      "client_id": clean_client_id,
+      "client_secret": clean_client_secret,
+    }, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+  )
+  os.chmod(tmp_path, 0o600)
+  tmp_path.replace(target)
+  os.chmod(target, 0o600)
+  return target

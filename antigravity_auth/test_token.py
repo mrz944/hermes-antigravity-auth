@@ -26,7 +26,11 @@ class TestToken(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_hermes_home = os.environ.get("HERMES_HOME")
+        self.original_client_id = os.environ.get("ANTIGRAVITY_CLIENT_ID")
+        self.original_client_secret = os.environ.get("ANTIGRAVITY_CLIENT_SECRET")
         os.environ["HERMES_HOME"] = self.temp_dir.name
+        os.environ["ANTIGRAVITY_CLIENT_ID"] = "test-client-id"
+        os.environ["ANTIGRAVITY_CLIENT_SECRET"] = "test-client-secret"
         from .accounts import shared
         self.original_shared_manager = shared.get_global_manager()
         shared._instance = None
@@ -38,6 +42,14 @@ class TestToken(unittest.TestCase):
             os.environ["HERMES_HOME"] = self.original_hermes_home
         else:
             os.environ.pop("HERMES_HOME", None)
+        if self.original_client_id is not None:
+            os.environ["ANTIGRAVITY_CLIENT_ID"] = self.original_client_id
+        else:
+            os.environ.pop("ANTIGRAVITY_CLIENT_ID", None)
+        if self.original_client_secret is not None:
+            os.environ["ANTIGRAVITY_CLIENT_SECRET"] = self.original_client_secret
+        else:
+            os.environ.pop("ANTIGRAVITY_CLIENT_SECRET", None)
         self.temp_dir.cleanup()
 
     def _mock_invalid_grant(self, mock_urlopen):

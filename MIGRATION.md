@@ -13,7 +13,7 @@ This guide helps users of `opencode-antigravity-auth` (the OpenCode npm plugin) 
 | **Config directory** | `~/.config/opencode/` | `~/.hermes/` |
 | **Config format** | `opencode.json` / `antigravity.json` | `config.yaml` (under `plugins.entries.antigravity`) |
 | **CLI login** | `opencode auth login` | `hermes antigravity login` |
-| **Updates** | Auto-update via plugin system | Reinstall from GitHub or a local source checkout |
+| **Updates** | Auto-update via plugin system | Run the canonical Git install plus `hermes-antigravity-install` |
 | **Notifications** | Toast notifications | Hermes notification system |
 | **Package type** | npm plugin | Python package (source/Git install) |
 
@@ -21,36 +21,22 @@ This guide helps users of `opencode-antigravity-auth` (the OpenCode npm plugin) 
 
 ## Migration Steps
 
-### 1. Install the package
+### 1. Install the package and Hermes wrappers
 
-The current supported install path is the GitHub repository or a local source
-checkout. A PyPI package may not be published yet.
-
-```bash
-pip install git+https://github.com/Reedtrullz/hermes-antigravity-auth.git
-```
-
-Or clone and install locally:
+The canonical install and update path is the Git package plus
+`hermes-antigravity-install`. The installer resolves the Python environment used
+by the `hermes` launcher, installs this package into that environment, and writes
+the Hermes file-plugin wrappers.
 
 ```bash
-git clone https://github.com/Reedtrullz/hermes-antigravity-auth.git
-cd hermes-antigravity-auth
-pip install -e .
-```
-
-### 2. Install the Hermes plugin wrappers
-
-```bash
+python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
 hermes-antigravity-install
 ```
 
-If the script is not on your shell `PATH`, run:
+Do not copy plugin directories by hand; copied wrappers can drift from the
+package installed in Hermes' Python.
 
-```bash
-python -m antigravity_auth.install_plugins
-```
-
-### 3. Provide OAuth client credentials
+### 2. Provide OAuth client credentials
 
 Before running `hermes antigravity login`, create a Google OAuth desktop client
 with authorized redirect URI `http://localhost:51121/oauth-callback`, then
@@ -73,7 +59,7 @@ Python package tree at `~/.hermes/antigravity-credentials.json`:
 
 Do not place real credentials in `antigravity_auth/_credentials.py`.
 
-### 4. Migrate accounts
+### 3. Migrate accounts
 
 The `antigravity-accounts.json` file format is compatible between OpenCode and Hermes. Simply copy it:
 
@@ -81,7 +67,7 @@ The `antigravity-accounts.json` file format is compatible between OpenCode and H
 cp ~/.config/opencode/antigravity-accounts.json ~/.hermes/antigravity-accounts.json
 ```
 
-### 5. Set up Hermes config
+### 4. Set up Hermes config
 
 Copy your plugin settings from `~/.config/opencode/antigravity.json` to your Hermes `config.yaml` at `~/.hermes/config.yaml`:
 
@@ -116,11 +102,12 @@ plugins:
       debug_tui: false
 ```
 
-### 6. Verify
+### 5. Verify
 
 ```bash
 hermes antigravity login    # Authenticate with Google
 hermes antigravity quota    # Check remaining quota
+hermes antigravity selftest # Offline transform/package round-trip smoke
 ```
 
 ---

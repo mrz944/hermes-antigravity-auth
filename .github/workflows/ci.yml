@@ -62,3 +62,16 @@ jobs:
                 raise SystemExit(f"forbidden credentials module in {artifact}: {name}")
           print("artifact contents OK")
           PY
+
+  smoke:
+    name: CLI selftest smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e '.[dev,yaml]'
+      - name: Run offline selftest
+        run: python -m antigravity_auth.selftest

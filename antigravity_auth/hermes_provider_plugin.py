@@ -2,17 +2,70 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+import logging
 import os
 import threading
 import time
+from typing import Any
+
+from .hermes_compat import (
+  detect_hermes_features,
+  diagnostics_from_features,
+  has_grouping_features,
+  has_required_model_picker_features,
+)
+
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+_PROVIDER_DIAGNOSTICS: list[dict[str, str]] = []
+_PROVIDERS_API_AVAILABLE = True
+
+
+def _record(status: str, check: str, detail: str, fix: str = "") -> None:
+  item = {"status": status, "check": check, "detail": detail, "fix": fix}
+  if item not in _PROVIDER_DIAGNOSTICS:
+    _PROVIDER_DIAGNOSTICS.append(item)
+  if status == "FAIL":
+    logger.error("%s: %s", check, detail)
+  elif status == "WARN":
+    logger.warning("%s: %s", check, detail)
+  else:
+    logger.info("%s: %s", check, detail)
+
+
+def get_provider_diagnostics() -> list[dict[str, str]]:
+  """Return provider-load diagnostics recorded in this process."""
+  return [dict(item) for item in _PROVIDER_DIAGNOSTICS]
+
+
+def _record_hermes_feature_diagnostics() -> None:
+  for item in diagnostics_from_features(detect_hermes_features()):
+    _record(
+      str(item.get("status", "WARN")),
+      str(item.get("check", "Hermes compatibility")),
+      str(item.get("detail", "")),
+      str(item.get("fix", "")),
+    )
+
+
+def ensure_provider_loaded() -> bool:
+  """Marker used by the CLI plugin after module import side effects run."""
+  return True
+
 
 try:
   from providers import register_provider
   from providers.base import ProviderProfile
-except Exception:
-  from dataclasses import dataclass, field
-  from typing import Any
-
+except Exception as exc:
+  _PROVIDERS_API_AVAILABLE = False
+  _record(
+    "WARN",
+    "provider registration API",
+    f"could not import Hermes providers API: {exc}",
+    "Load inside Hermes or use a Hermes build that exposes providers.register_provider.",
+  )
   @dataclass
   class ProviderProfile:
     name: str
@@ -34,7 +87,12 @@ except Exception:
     default_aux_model: str = ""
 
   def register_provider(profile: ProviderProfile) -> None:
-    return None
+    _record(
+      "WARN",
+      "provider profile registration",
+      f"standalone fallback active; provider profile {profile.name} was not registered with Hermes providers API",
+      "Run hermes antigravity doctor inside the Hermes Agent environment.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +115,13 @@ def _set_oauth_env_from_credentials() -> None:
       resolved_id, resolved_secret = resolve_oauth_credentials()
       client_id = client_id or resolved_id
       client_secret = client_secret or resolved_secret
-    except Exception:
-      pass
+    except Exception as exc:
+      _record(
+        "WARN",
+        "OAuth credential bridge",
+        f"could not resolve Antigravity OAuth credentials for Hermes env bridge: {exc}",
+        "Set ANTIGRAVITY_CLIENT_ID/ANTIGRAVITY_CLIENT_SECRET or run hermes antigravity doctor.",
+      )
 
   if client_id:
     os.environ.setdefault("HERMES_GEMINI_CLIENT_ID", client_id)
@@ -136,22 +199,52 @@ def _patch_hermes_model_picker() -> None:
   # which may not be available in all environments).
   try:
     import hermes_cli.models as models
-  except Exception:
+  except Exception as exc:
+    _record(
+      "WARN",
+      "model picker patch",
+      f"could not import hermes_cli.models: {exc}",
+      "Standalone provider fallback remains available; picker branding patches are skipped.",
+    )
+    return
+
+  supported, missing = has_required_model_picker_features(models)
+  if not supported:
+    _record(
+      "WARN",
+      "model picker patch",
+      "skipped because hermes_cli.models is missing " + ", ".join(missing),
+      "Standalone provider fallback remains available; upgrade Hermes for picker branding.",
+    )
     return
 
   label = "Google Antigravity"
   desc = "Google Antigravity (Claude/Gemini via OAuth + Code Assist)"
 
   def apply_patches() -> bool:
-    models._PROVIDER_MODELS["google-gemini-cli"] = list(ANTIGRAVITY_MODELS)
+    try:
+      models._PROVIDER_MODELS["google-gemini-cli"] = list(ANTIGRAVITY_MODELS)
+    except Exception as exc:
+      _record(
+        "FAIL",
+        "model picker provider models",
+        f"could not register Antigravity models in hermes_cli.models: {exc}",
+        "Upgrade Hermes Agent or use a compatible Hermes build.",
+      )
+      return False
 
     # Alias registration — non-fatal, best-effort.
     try:
       models._PROVIDER_LABELS["google-gemini-cli"] = label
       for alias in ANTIGRAVITY_ALIASES:
         models._PROVIDER_ALIASES[alias] = "google-gemini-cli"
-    except Exception:
-      pass
+    except Exception as exc:
+      _record(
+        "WARN",
+        "model picker aliases",
+        f"could not patch hermes_cli.models aliases: {exc}",
+        "Antigravity may appear under the native google-gemini-cli provider name.",
+      )
 
     # Provider label overrides and CLI aliases — optional Hermes internals.
     try:
@@ -160,8 +253,13 @@ def _patch_hermes_model_picker() -> None:
       cli_providers._LABEL_OVERRIDES["google-gemini-cli"] = label
       for alias in ANTIGRAVITY_ALIASES:
         cli_providers.ALIASES[alias] = "google-gemini-cli"
-    except Exception:
-      pass
+    except Exception as exc:
+      _record(
+        "WARN",
+        "provider aliases",
+        f"could not patch hermes_cli.providers aliases: {exc}",
+        "Use google-gemini-cli if Antigravity aliases are unavailable.",
+      )
 
     try:
       replacement = models.ProviderEntry("google-gemini-cli", label, desc)
@@ -169,10 +267,15 @@ def _patch_hermes_model_picker() -> None:
         if entry.slug == "google-gemini-cli":
           models.CANONICAL_PROVIDERS[index] = replacement
           break
-    except Exception:
-      pass
+    except Exception as exc:
+      _record(
+        "WARN",
+        "canonical provider row",
+        f"could not patch Hermes canonical provider row: {exc}",
+        "Antigravity may still work but may keep the native Google display label.",
+      )
 
-    groups_ready = hasattr(models, "PROVIDER_GROUPS") and hasattr(models, "_SLUG_TO_GROUP")
+    groups_ready = has_grouping_features(models)
     if groups_ready:
       try:
         group_label, members = models.PROVIDER_GROUPS.get("google", ("Google Gemini", []))
@@ -183,27 +286,60 @@ def _patch_hermes_model_picker() -> None:
           else:
             models.PROVIDER_GROUPS.pop("google", None)
         models._SLUG_TO_GROUP.pop("google-gemini-cli", None)
-      except Exception:
-        pass
+      except Exception as exc:
+        _record(
+          "WARN",
+          "provider grouping",
+          f"could not separate Antigravity from the Google provider group: {exc}",
+          "Antigravity may appear under the grouped Google picker row.",
+        )
     return groups_ready
 
   if apply_patches():
+    _record("PASS", "model picker patch", "Antigravity provider models and picker branding patched")
     return
+
+  _record(
+    "WARN",
+    "model picker group tables",
+    "Hermes provider group tables were not ready; scheduled a short late patch",
+    "If Antigravity remains grouped under Google, restart Hermes and rerun doctor.",
+  )
 
   def late_patch() -> None:
     for _ in range(1000):
       if apply_patches():
+        _record("PASS", "model picker patch", "Antigravity provider picker branding patched after delayed Hermes initialization")
         return
       time.sleep(0.001)
+    _record(
+      "WARN",
+      "model picker group tables",
+      "Hermes provider group tables did not become available during delayed patch",
+      "Use google-gemini-cli if the Antigravity picker row is unavailable.",
+    )
 
   threading.Thread(target=late_patch, daemon=True).start()
 
 
-register_provider(antigravity)
+try:
+  register_provider(antigravity)
+  if _PROVIDERS_API_AVAILABLE:
+    _record("PASS", "provider profile registration", "registered google-gemini-cli Antigravity provider profile")
+except Exception as exc:
+  _record(
+    "FAIL",
+    "provider profile registration",
+    f"register_provider failed for google-gemini-cli: {exc}",
+    "Run hermes antigravity doctor inside Hermes and verify provider plugin compatibility.",
+  )
+_record_hermes_feature_diagnostics()
 _patch_hermes_model_picker()
 
 try:
   from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
+  if not hasattr(PROVIDER_REGISTRY, "get") or not callable(ProviderConfig):
+    raise TypeError("hermes_cli.auth registry does not expose PROVIDER_REGISTRY.get and callable ProviderConfig")
 
   target = PROVIDER_REGISTRY.get("google-gemini-cli")
   if target is None:
@@ -219,8 +355,14 @@ try:
     target.name = "Google Antigravity"
   for _alias in antigravity.aliases:
     PROVIDER_REGISTRY[_alias] = target
-except Exception:
-  pass
+  _record("PASS", "provider auth registry", "patched Hermes auth provider registry aliases")
+except Exception as exc:
+  _record(
+    "WARN",
+    "provider auth registry",
+    f"could not patch hermes_cli.auth provider registry: {exc}",
+    "Hermes may still route through provider profile registration; rerun doctor inside Hermes.",
+  )
 
 _interceptor_installed = False
 
@@ -228,22 +370,33 @@ try:
   from .interceptor import install as _install_interceptor
 
   _interceptor_installed = _install_interceptor()
+  if _interceptor_installed:
+    _record("PASS", "provider interceptor", "HTTP interceptor installed from provider plugin")
+  else:
+    _record(
+      "WARN",
+      "provider interceptor",
+      "interceptor install returned false from provider plugin",
+      "Run hermes antigravity status to diagnose Claude routing.",
+    )
 except Exception as _exc:
-  import logging
-  _logger = logging.getLogger(__name__)
-  _logger.error(
+  logger.error(
     "Antigravity HTTP interceptor failed to install. "
     "Claude models will not work through Antigravity. "
     "Error: %s",
     _exc,
     exc_info=True,
   )
+  _record(
+    "FAIL",
+    "provider interceptor",
+    f"HTTP interceptor failed to install: {_exc}",
+    "Run hermes antigravity status to diagnose Claude routing.",
+  )
 
 # Warn loudly if interceptor failed to install — Claude models require it.
 if not _interceptor_installed:
-  import logging
-  _logger = logging.getLogger(__name__)
-  _logger.warning(
+  logger.warning(
     "Antigravity HTTP interceptor is NOT installed. "
     "Gemini models may work via Code Assist, but Claude models require the "
     "interceptor for Antigravity header/response transformation. "

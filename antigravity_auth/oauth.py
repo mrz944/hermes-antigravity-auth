@@ -13,27 +13,25 @@ from urllib.parse import urlencode
 try:
     from ._http_utils import decompress_response as _decompress
     from .constants import (
-        ANTIGRAVITY_CLIENT_ID,
-        ANTIGRAVITY_CLIENT_SECRET,
         ANTIGRAVITY_REDIRECT_URI,
         ANTIGRAVITY_SCOPES,
         ANTIGRAVITY_LOAD_ENDPOINTS,
         ANTIGRAVITY_ENDPOINT_FALLBACKS,
         GEMINI_CLI_HEADERS,
         get_antigravity_headers,
+        require_credentials,
     )
     from .debug import createLogger, format_error_for_log
 except ImportError:
     from _http_utils import decompress_response as _decompress
     from constants import (
-        ANTIGRAVITY_CLIENT_ID,
-        ANTIGRAVITY_CLIENT_SECRET,
         ANTIGRAVITY_REDIRECT_URI,
         ANTIGRAVITY_SCOPES,
         ANTIGRAVITY_LOAD_ENDPOINTS,
         ANTIGRAVITY_ENDPOINT_FALLBACKS,
         GEMINI_CLI_HEADERS,
         get_antigravity_headers,
+        require_credentials,
     )
     from debug import createLogger, format_error_for_log
 
@@ -94,17 +92,11 @@ def get_pkce_verifier(state_id: str) -> dict[str, str] | None:
     return _pkce_verifier_store.pop(state_id, None)
 
 def _ensure_credentials():
-    if not ANTIGRAVITY_CLIENT_ID or not ANTIGRAVITY_CLIENT_SECRET:
-        raise RuntimeError(
-            "OAuth credentials not configured. "
-            "Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET environment variables, "
-            "or create antigravity_auth/_credentials.py with the values."
-        )
+    require_credentials()
 
 def authorize_antigravity(project_id: str = "") -> dict:
     now = time.time()
     _cleanup_expired_pkce_verifiers(now)
-    from .constants import require_credentials
     cid, csec = require_credentials()
     pkce = generate_pkce()
     
@@ -221,6 +213,7 @@ def calculate_token_expiry(request_time_ms: int, expires_in_seconds) -> int:
 
 def exchange_antigravity(code: str, state: str) -> dict:
     try:
+        cid, csec = require_credentials()
         state_data = decode_state(state)
         state_id = state_data.get("id", "")
         pkce_data = get_pkce_verifier(state_id) if state_id else None
@@ -235,8 +228,8 @@ def exchange_antigravity(code: str, state: str) -> dict:
         start_time = int(time.time() * 1000)
         
         token_params = {
-            "client_id": ANTIGRAVITY_CLIENT_ID,
-            "client_secret": ANTIGRAVITY_CLIENT_SECRET,
+            "client_id": cid,
+            "client_secret": csec,
             "code": code,
             "grant_type": "authorization_code",
             "redirect_uri": ANTIGRAVITY_REDIRECT_URI,
