@@ -946,15 +946,19 @@ def print_interceptor_status():
     try:
         from . import interceptor
         installed = interceptor.is_installed()
+        health = interceptor.get_routing_health()
         if installed:
             print("  Status:    INSTALLED (headers + auth + request transformation active)")
         else:
             print("  Status:    NOT INSTALLED")
             print("  Impact:    Claude models will NOT work through Antigravity")
             print("             (requests go through Code Assist which checks eligibility)")
+        print(f"  Hook:      {'INSTALLED' if health.get('global_httpx_hook_installed') else 'NOT INSTALLED'}")
+        print(f"  Routing:   {str(health.get('status', 'unknown')).upper()} - {health.get('detail', '')}")
     except Exception as exc:
         print(f"  Status:    ERROR importing interceptor: {exc}")
         installed = False
+        health = {"status": "blocked", "detail": str(exc), "fix": "Reinstall hermes-antigravity-auth."}
 
     # Check if Hermes adapter symbols are importable
     print()
@@ -1014,9 +1018,13 @@ def print_interceptor_status():
         gemini_models = [m for m in ANTIGRAVITY_MODELS if "gemini" in m.lower()]
         print(f"  Claude:    {', '.join(claude_models)}")
         print(f"  Gemini:    {', '.join(gemini_models)}")
-        if not installed and claude_models:
+        if claude_models:
+            print(f"  Claude routing: {str(health.get('status', 'unknown')).upper()}")
+            if health.get("fix"):
+                print(f"  Fix:       {health.get('fix')}")
+        if not health.get("claude_routing_ready") and claude_models:
             print()
-            print("  ⚠️  Claude models require the HTTP interceptor to be installed.")
+            print("  Claude models require the HTTP interceptor to be installed and routing-ready.")
             print("     Without it, requests go through Code Assist which may return 403.")
             print("     Run 'hermes antigravity doctor' for full diagnostics.")
     except Exception as exc:

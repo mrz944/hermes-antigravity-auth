@@ -79,6 +79,23 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("PASS automatic retry", output)
         self.assertIn("streaming responses cannot be replayed", output)
 
+    def test_doctor_reports_claude_routing_health(self):
+        from antigravity_auth.doctor import _check_routing_health
+
+        with patch("antigravity_auth.interceptor.get_routing_health", return_value={
+            "status": "degraded",
+            "detail": "missing interceptor patch",
+            "fix": "restart Hermes",
+            "claude_routing_ready": False,
+        }):
+            rows = _check_routing_health()
+
+        checks = {row.check: row for row in rows}
+        self.assertEqual(checks["routing health"].status, "WARN")
+        self.assertIn("missing interceptor patch", checks["routing health"].detail)
+        self.assertEqual(checks["Claude routing"].status, "WARN")
+        self.assertIn("restart Hermes", checks["Claude routing"].fix)
+
     def test_doctor_account_store_locking_uses_actual_probe_success(self):
         from antigravity_auth.doctor import run_doctor
 

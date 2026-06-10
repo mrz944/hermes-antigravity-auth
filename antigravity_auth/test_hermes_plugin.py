@@ -265,6 +265,13 @@ class TestHermesPluginRegister(unittest.TestCase):
     from antigravity_auth.cli import print_interceptor_status
 
     with patch("antigravity_auth.interceptor.is_installed", return_value=True), \
+         patch("antigravity_auth.interceptor.get_routing_health", return_value={
+           "status": "ready",
+           "detail": "all active",
+           "fix": "",
+           "global_httpx_hook_installed": True,
+           "claude_routing_ready": True,
+         }), \
          patch("builtins.print") as mock_print:
       print_interceptor_status()
 
@@ -280,11 +287,19 @@ class TestHermesPluginRegister(unittest.TestCase):
     from antigravity_auth.cli import print_interceptor_status
 
     with patch("antigravity_auth.interceptor.is_installed", return_value=False), \
+         patch("antigravity_auth.interceptor.get_routing_health", return_value={
+           "status": "degraded",
+           "detail": "missing interceptor patch",
+           "fix": "restart Hermes",
+           "global_httpx_hook_installed": False,
+           "claude_routing_ready": False,
+         }), \
          patch("builtins.print") as mock_print:
       print_interceptor_status()
 
     output = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
     self.assertIn("NOT INSTALLED", output)
+    self.assertIn("DEGRADED", output)
 
   def test_interceptor_status_shows_accounts(self):
     import json
@@ -305,6 +320,13 @@ class TestHermesPluginRegister(unittest.TestCase):
 
       with patch.dict(os.environ, {"HERMES_HOME": tmpdir}), \
            patch("antigravity_auth.interceptor.is_installed", return_value=True), \
+           patch("antigravity_auth.interceptor.get_routing_health", return_value={
+             "status": "ready",
+             "detail": "all active",
+             "fix": "",
+             "global_httpx_hook_installed": True,
+             "claude_routing_ready": True,
+           }), \
            patch("builtins.print") as mock_print:
         print_interceptor_status()
 
@@ -318,11 +340,19 @@ class TestHermesPluginRegister(unittest.TestCase):
     from antigravity_auth.cli import print_interceptor_status
 
     with patch("antigravity_auth.interceptor.is_installed", return_value=True), \
+         patch("antigravity_auth.interceptor.get_routing_health", return_value={
+           "status": "ready",
+           "detail": "all active",
+           "fix": "",
+           "global_httpx_hook_installed": True,
+           "claude_routing_ready": True,
+         }), \
          patch("builtins.print") as mock_print:
       print_interceptor_status()
 
     output = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
     self.assertIn("claude-opus-4-6-thinking", output)
+    self.assertIn("Claude routing: READY", output)
 
   def test_interceptor_status_warns_when_not_installed_and_claude_models_present(self):
     from unittest.mock import patch
@@ -330,8 +360,16 @@ class TestHermesPluginRegister(unittest.TestCase):
     from antigravity_auth.cli import print_interceptor_status
 
     with patch("antigravity_auth.interceptor.is_installed", return_value=False), \
+         patch("antigravity_auth.interceptor.get_routing_health", return_value={
+           "status": "blocked",
+           "detail": "adapter missing",
+           "fix": "run inside Hermes",
+           "global_httpx_hook_installed": False,
+           "claude_routing_ready": False,
+         }), \
          patch("builtins.print") as mock_print:
       print_interceptor_status()
 
     output = " ".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
     self.assertIn("Claude models require", output)
+    self.assertIn("Claude routing: BLOCKED", output)

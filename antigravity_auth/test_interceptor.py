@@ -990,6 +990,71 @@ class TestInstallProjectContextPatch(unittest.TestCase):
             interceptor._ORIGINAL_ENSURE_PROJECT_CONTEXT = original_state[3]
 
 
+class TestRoutingHealth(unittest.TestCase):
+
+    def test_routing_health_ready_when_interceptor_and_adapter_are_patched(self):
+        from unittest.mock import patch
+        import antigravity_auth.interceptor as interceptor
+
+        class FakeGeminiCloudCodeClient:
+            pass
+
+        fake_gca = types.ModuleType("agent.gemini_cloudcode_adapter")
+        fake_gca.GeminiCloudCodeClient = FakeGeminiCloudCodeClient
+        fake_gca.wrap_code_assist_request = lambda **kwargs: kwargs
+        fake_agent = types.ModuleType("agent")
+        fake_agent.gemini_cloudcode_adapter = fake_gca
+
+        original = (
+            interceptor._PATCHED,
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED,
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST,
+        )
+        try:
+            interceptor._PATCHED = True
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = True
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST = lambda **kwargs: kwargs
+            with patch.dict(sys.modules, {
+                "agent": fake_agent,
+                "agent.gemini_cloudcode_adapter": fake_gca,
+            }):
+                health = interceptor.get_routing_health()
+
+            self.assertEqual(health["status"], "ready")
+            self.assertTrue(health["claude_routing_ready"])
+            self.assertTrue(health["global_httpx_hook_installed"])
+        finally:
+            interceptor._PATCHED = original[0]
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = original[1]
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST = original[2]
+
+    def test_routing_health_blocked_when_adapter_is_missing(self):
+        import antigravity_auth.interceptor as interceptor
+
+        original = (
+            interceptor._PATCHED,
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED,
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST,
+        )
+        try:
+            interceptor._PATCHED = False
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = False
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST = None
+            with patch.dict(sys.modules, {
+                "agent": None,
+                "agent.gemini_cloudcode_adapter": None,
+            }):
+                health = interceptor.get_routing_health()
+
+            self.assertEqual(health["status"], "blocked")
+            self.assertFalse(health["claude_routing_ready"])
+            self.assertIn("Cloud Code adapter", health["detail"])
+        finally:
+            interceptor._PATCHED = original[0]
+            interceptor._GLOBAL_HTTPX_HOOK_INSTALLED = original[1]
+            interceptor._ORIGINAL_WRAP_CODE_ASSIST = original[2]
+
+
 class TestRetryWrapper(unittest.TestCase):
 
     def _make_request(self):

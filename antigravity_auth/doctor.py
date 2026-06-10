@@ -103,6 +103,30 @@ def _check_interceptor() -> DoctorRow:
     return _row("FAIL", "interceptor", f"could not inspect interceptor: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")
 
 
+def _check_routing_health() -> list[DoctorRow]:
+  try:
+    from . import interceptor
+    health = interceptor.get_routing_health()
+  except Exception as exc:
+    return [_row("FAIL", "routing health", f"could not inspect routing health: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")]
+
+  status = str(health.get("status", "blocked"))
+  row_status = "PASS" if status == "ready" else "WARN" if status == "degraded" else "FAIL"
+  rows = [
+    _row(row_status, "routing health", str(health.get("detail", "")), str(health.get("fix", ""))),
+  ]
+  if health.get("claude_routing_ready"):
+    rows.append(_row("PASS", "Claude routing", "Claude models will route through Antigravity request transforms"))
+  else:
+    rows.append(_row(
+      "FAIL" if status == "blocked" else "WARN",
+      "Claude routing",
+      "Claude models are registered but Antigravity routing is not ready",
+      str(health.get("fix", "Run hermes antigravity status inside Hermes.")),
+    ))
+  return rows
+
+
 def _check_retry_behavior() -> DoctorRow:
   try:
     from . import interceptor
@@ -319,6 +343,7 @@ def run_doctor() -> list[DoctorRow]:
   rows.append(_check_entrypoint())
   rows.extend(_check_hermes_adapter())
   rows.append(_check_interceptor())
+  rows.extend(_check_routing_health())
   rows.append(_check_retry_behavior())
   rows.extend(_check_provider_registration())
   rows.append(_check_account_store_locking())
