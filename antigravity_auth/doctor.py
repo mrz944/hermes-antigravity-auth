@@ -37,7 +37,7 @@ def _row(status: str, check: str, detail: str, fix: str = "") -> DoctorRow:
 def _path_mode(path: Path) -> int | None:
   try:
     return stat.S_IMODE(path.stat().st_mode)
-  except Exception:
+  except OSError:
     return None
 
 
@@ -91,13 +91,14 @@ def _check_interceptor() -> DoctorRow:
     from . import interceptor
     if interceptor.is_installed():
       return _row("PASS", "interceptor", "interceptor is installed in this process")
+    adapter_error = ""
     try:
       adapter = importlib.import_module("agent.gemini_cloudcode_adapter")
       if hasattr(adapter, "GeminiCloudCodeClient") and hasattr(adapter, "wrap_code_assist_request"):
         return _row("WARN", "interceptor", "interceptor is not installed yet, but Hermes symbols are importable", "Ensure the antigravity-cli plugin is enabled in ~/.hermes/config.yaml and restart Hermes.")
-    except Exception:
-      pass
-    return _row("FAIL", "interceptor", "interceptor is not installed and Hermes adapter symbols are unavailable", "Enable the plugin from within Hermes or install a compatible Hermes build.")
+    except Exception as exc:
+      adapter_error = f": {exc}"
+    return _row("FAIL", "interceptor", f"interceptor is not installed and Hermes adapter symbols are unavailable{adapter_error}", "Enable the plugin from within Hermes or install a compatible Hermes build.")
   except Exception as exc:
     return _row("FAIL", "interceptor", f"could not inspect interceptor: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")
 
@@ -120,6 +121,61 @@ def _check_retry_behavior() -> DoctorRow:
     )
   except Exception as exc:
     return _row("FAIL", "automatic retry", f"could not inspect retry wrapper: {exc}", "Reinstall hermes-antigravity-auth and rerun doctor.")
+
+
+def _check_provider_registration() -> list[DoctorRow]:
+  try:
+    from . import hermes_provider_plugin
+  except Exception as exc:
+    return [_row(
+      "FAIL",
+      "provider registration",
+      f"could not import antigravity provider plugin: {exc}",
+      "Reinstall hermes-antigravity-auth in the Python environment used by Hermes and rerun doctor.",
+    )]
+
+  rows: list[DoctorRow] = []
+  profile = getattr(hermes_provider_plugin, "antigravity", None)
+  if profile is None:
+    rows.append(_row(
+      "FAIL",
+      "provider profile",
+      "antigravity provider profile object is missing",
+      "Reinstall hermes-antigravity-auth and rerun doctor.",
+    ))
+  else:
+    rows.append(_row(
+      "PASS",
+      "provider profile",
+      f"name={getattr(profile, 'name', 'unknown')}, display={getattr(profile, 'display_name', 'unknown')}",
+    ))
+
+  get_diagnostics = getattr(hermes_provider_plugin, "get_provider_diagnostics", None)
+  if not callable(get_diagnostics):
+    rows.append(_row(
+      "FAIL",
+      "provider diagnostics",
+      "provider plugin does not expose get_provider_diagnostics",
+      "Upgrade hermes-antigravity-auth and rerun doctor.",
+    ))
+    return rows
+
+  diagnostics = get_diagnostics()
+  if not diagnostics:
+    rows.append(_row("WARN", "provider diagnostics", "provider plugin loaded without reporting diagnostics", "Restart Hermes and rerun doctor."))
+    return rows
+
+  for item in diagnostics:
+    if not isinstance(item, dict):
+      rows.append(_row("WARN", "provider diagnostics", f"ignored malformed diagnostic entry: {item!r}"))
+      continue
+    rows.append(_row(
+      str(item.get("status", "WARN")),
+      str(item.get("check", "provider diagnostic")),
+      str(item.get("detail", "")),
+      str(item.get("fix", "")),
+    ))
+  return rows
 
 
 def _check_account_store_locking() -> DoctorRow:
@@ -248,6 +304,7 @@ def run_doctor() -> list[DoctorRow]:
   rows.extend(_check_hermes_adapter())
   rows.append(_check_interceptor())
   rows.append(_check_retry_behavior())
+  rows.extend(_check_provider_registration())
   rows.append(_check_account_store_locking())
   rows.append(_check_account_store())
   rows.extend(_check_auth_files())

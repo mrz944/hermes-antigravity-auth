@@ -34,7 +34,9 @@ def isolated_register_environment(tmpdir, interceptor_return=True, interceptor_s
       patch("antigravity_auth.accounts.shared.get_or_create_global_manager"), \
       patch("antigravity_auth.tools.register_tools"), \
       patch("antigravity_auth.token_watchdog.start_watchdog"), \
-      patch("antigravity_auth.version.start_version_check"):
+      patch("antigravity_auth.version.start_version_check"), \
+      patch("antigravity_auth.hermes_plugin.ensure_provider_loaded") as ensure_provider_loaded:
+    config.ensure_provider_loaded = ensure_provider_loaded
     yield config
 
 
@@ -192,6 +194,28 @@ class TestHermesPluginRegister(unittest.TestCase):
     self.assertEqual(cmd["help"], "Google Antigravity utilities")
     self.assertTrue(callable(cmd["setup_fn"]))
     self.assertTrue(callable(cmd["handler_fn"]))
+
+  def test_register_loads_provider_in_process(self):
+    from antigravity_auth import hermes_plugin
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      with isolated_register_environment(tmpdir) as config, \
+          patch("antigravity_auth.hermes_plugin.initialize_debug"):
+        hermes_plugin.register(FakeCtx())
+
+    config.ensure_provider_loaded.assert_called_once_with()
+
+  def test_register_fails_loudly_when_provider_load_fails(self):
+    from antigravity_auth import hermes_plugin
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      with isolated_register_environment(tmpdir) as config, \
+          patch("antigravity_auth.hermes_plugin.initialize_debug"):
+        config.ensure_provider_loaded.side_effect = RuntimeError("provider boom")
+        with self.assertRaises(RuntimeError) as ctx:
+          hermes_plugin.register(FakeCtx())
+
+    self.assertIn("provider boom", str(ctx.exception))
 
   def test_register_registers_recovery_hook(self):
     from antigravity_auth import hermes_plugin

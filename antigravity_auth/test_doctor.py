@@ -100,3 +100,23 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(len(lock_rows), 1)
         self.assertEqual(lock_rows[0].status, "WARN")
         self.assertIn("lock acquisition failed", lock_rows[0].detail)
+
+    def test_doctor_surfaces_provider_diagnostics(self):
+        from antigravity_auth import hermes_provider_plugin
+        from antigravity_auth.doctor import _check_provider_registration
+
+        diagnostics = [{
+            "status": "WARN",
+            "check": "provider aliases",
+            "detail": "could not patch aliases",
+            "fix": "use google-gemini-cli",
+        }]
+
+        with patch.object(hermes_provider_plugin, "get_provider_diagnostics", return_value=diagnostics):
+            rows = _check_provider_registration()
+
+        provider_rows = [row for row in rows if row.check == "provider aliases"]
+        self.assertEqual(len(provider_rows), 1)
+        self.assertEqual(provider_rows[0].status, "WARN")
+        self.assertIn("could not patch aliases", provider_rows[0].detail)
+        self.assertIn("google-gemini-cli", provider_rows[0].fix)
