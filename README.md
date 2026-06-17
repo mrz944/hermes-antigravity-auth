@@ -15,7 +15,7 @@
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Install the hermes-antigravity-auth plugin for Hermes Agent by following the instructions at: https://raw.githubusercontent.com/Reedtrullz/hermes-antigravity-auth/main/README.md
+Install the hermes-antigravity-auth plugin for Hermes Agent by following the instructions at: [https://raw.githubusercontent.com/Reedtrullz/hermes-antigravity-auth/main/README.md](https://raw.githubusercontent.com/mrz944/hermes-antigravity-auth/refs/heads/main/README.md)
 ```
 
 **Option B: Manual setup**
