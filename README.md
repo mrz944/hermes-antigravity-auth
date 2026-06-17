@@ -5,23 +5,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
 
----
-
-<details open>
-<summary><b>⚠️ Terms of Service Warning — Read Before Installing</b></summary>
-
-> [!CAUTION]
-> Using this plugin (and any proxy for Antigravity) violates Google's Terms of Service. A number of users have reported their Google accounts being **banned** or **shadow-banned** (restricted access without explicit notification).
->
-> **By using this plugin, you acknowledge:**
-> - This is an unofficial tool not endorsed by Google
-> - Your account may be suspended or permanently banned
-> - You assume all risks associated with using this plugin
-
-</details>
-
----
-
 ## Quick Install
 
 <details open>
