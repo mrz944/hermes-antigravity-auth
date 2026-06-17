@@ -15,7 +15,7 @@
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Install the hermes-antigravity-auth plugin for Hermes Agent by following the instructions at: [https://raw.githubusercontent.com/Reedtrullz/hermes-antigravity-auth/main/README.md](https://raw.githubusercontent.com/mrz944/hermes-antigravity-auth/refs/heads/main/README.md)
+Install the hermes-antigravity-auth plugin for Hermes Agent by following the instructions at: [https://raw.githubusercontent.com/mrz944/hermes-antigravity-auth/main/README.md](https://raw.githubusercontent.com/mrz944/hermes-antigravity-auth/refs/heads/main/README.md)
 ```
 
 **Option B: Manual setup**
@@ -28,7 +28,7 @@ by the `hermes` launcher, installs this package into that environment, and write
 the Hermes file-plugin wrappers.
 
 ```bash
-python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/mrz944/hermes-antigravity-auth.git"
 hermes-antigravity-install
 ```
 
@@ -119,7 +119,7 @@ In `hermes model` and the in-agent `/model` picker, Antigravity appears as
 
 1. Install from GitHub and run the installer:
    ```bash
-   python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"
+   python3 -m pip install --upgrade "hermes-antigravity-auth[yaml] @ git+https://github.com/mrz944/hermes-antigravity-auth.git"
    hermes-antigravity-install
    ```
 
@@ -285,7 +285,7 @@ scheduling modes are `cache_first`, `balance`, and `performance_first`.
 Percentage values are clamped to 0–100, retry/backoff intervals are clamped to
 sane positive bounds, and `soft_quota_cache_ttl_minutes` must be `auto` or a
 positive integer. Install with the `[yaml]` extra (`pip install
-"hermes-antigravity-auth[yaml] @ git+https://github.com/Reedtrullz/hermes-antigravity-auth.git"`
+"hermes-antigravity-auth[yaml] @ git+https://github.com/mrz944/hermes-antigravity-auth.git"`
 or `pip install -e ".[dev,yaml]"` from a checkout) when using config files. If
 `~/.hermes/config.yaml` exists without PyYAML installed, the doctor command
 reports a WARN with the install command.
